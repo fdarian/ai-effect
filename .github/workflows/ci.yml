@@ -20,7 +20,7 @@ jobs:
       - run: bun run format
       - uses: stefanzweifel/git-auto-commit-action@v7
         with:
-          commit_message: 'style: apply formatting'
+          commit_message: "style: apply formatting"
 
   check:
     needs: format
