@@ -2,24 +2,15 @@ import * as AiSdk from 'ai';
 import { Effect } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
+import { combineAbortSignals } from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
 	makeRunPromise,
+	START_END_CALLBACK_KEYS,
+	type StartEndCallbackKeys,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
-
-/**
- * Both the deprecated `experimental_*` names and their v7 replacements are
- * listed so EffectifyCallbacks rewrites whichever one a caller uses.
- */
-export const RERANK_CALLBACK_KEYS = [
-	'onStart',
-	'experimental_onStart',
-	'onEnd',
-	'experimental_onEnd',
-] as const;
-type RerankCallbackKeys = (typeof RERANK_CALLBACK_KEYS)[number];
 
 /**
  * `ai` doesn't export `JSONObject` (it lives in `@ai-sdk/provider`, which isn't
@@ -43,7 +34,7 @@ type EffectRerankDef<
 	R,
 > = EffectifyCallbacks<
 	OriginalRerankDef<VALUE, RUNTIME_CONTEXT>,
-	RerankCallbackKeys,
+	StartEndCallbackKeys,
 	R
 > & { abortSignal?: AbortSignal };
 
@@ -61,11 +52,8 @@ export function rerank<
 			try: (signal) =>
 				AiSdk.rerank({
 					...params,
-					...wrapCallbacks(runPromise, params, RERANK_CALLBACK_KEYS),
-					abortSignal:
-						params.abortSignal === undefined
-							? signal
-							: AbortSignal.any([signal, params.abortSignal]),
+					...wrapCallbacks(runPromise, params, START_END_CALLBACK_KEYS),
+					abortSignal: combineAbortSignals(signal, params.abortSignal),
 				} as OriginalRerankDef<VALUE, RUNTIME_CONTEXT>),
 			catch: (cause) =>
 				new AiError({

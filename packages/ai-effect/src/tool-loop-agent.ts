@@ -3,6 +3,7 @@ import { Effect } from 'effect';
 import { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
 import { GENERATE_TEXT_CALLBACK_KEYS } from '#src/generate-text.ts';
+import { combineAbortSignals } from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
@@ -14,11 +15,11 @@ import {
 	type StreamTextResult,
 } from '#src/internal/stream-text-result.ts';
 
-// `onStepError`, `onError` and `onAbort` can only be set on the settings: the
-// SDK doesn't accept them per call.
+// `onStepError` arrives via GENERATE_TEXT_CALLBACK_KEYS; it, `onError` and
+// `onAbort` can only be set on the settings: the SDK doesn't accept them per
+// call.
 const SETTINGS_CALLBACK_KEYS = [
 	...GENERATE_TEXT_CALLBACK_KEYS,
-	'onStepError',
 	'onError',
 	'onAbort',
 ] as const;
@@ -191,10 +192,7 @@ function make<
 							agent.generate({
 								...params,
 								...wrapCallbacks(callRunPromise, params, CALL_CALLBACK_KEYS),
-								abortSignal:
-									params.abortSignal === undefined
-										? signal
-										: AbortSignal.any([signal, params.abortSignal]),
+								abortSignal: combineAbortSignals(signal, params.abortSignal),
 							} as OriginalGenerateParams<
 								CALL_OPTIONS,
 								TOOLS,
@@ -219,9 +217,6 @@ function make<
 					const callRunPromise = yield* makeRunPromise<CALL_R>();
 
 					const callController = new AbortController();
-					const signals = [ai.abortSignal, callController.signal];
-					if (params.abortSignal !== undefined)
-						signals.push(params.abortSignal);
 
 					// Not the fiber's signal: the stream outlives this Effect.
 					const raw = yield* Effect.tryPromise({
@@ -229,7 +224,11 @@ function make<
 							agent.stream({
 								...params,
 								...wrapCallbacks(callRunPromise, params, CALL_CALLBACK_KEYS),
-								abortSignal: AbortSignal.any(signals),
+								abortSignal: combineAbortSignals(
+									ai.abortSignal,
+									callController.signal,
+									params.abortSignal,
+								),
 							} as OriginalStreamParams<
 								CALL_OPTIONS,
 								TOOLS,

@@ -43,3 +43,15 @@ export type EffectifyCallbacks<T, Keys extends string, R> = Omit<
 		? (...args: A) => Effect.Effect<void, never, R>
 		: T[K];
 };
+
+/**
+ * Both the deprecated `experimental_*` names and their v7 replacements are
+ * listed so EffectifyCallbacks rewrites whichever one a caller uses.
+ */
+export const START_END_CALLBACK_KEYS = [
+	'onStart',
+	'experimental_onStart',
+	'onEnd',
+	'experimental_onEnd',
+] as const;
+export type StartEndCallbackKeys = (typeof START_END_CALLBACK_KEYS)[number];

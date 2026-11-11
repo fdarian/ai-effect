@@ -1,4 +1,5 @@
 import * as AiSdk from 'ai';
+import { MockLanguageModelV4 } from 'ai/test';
 import { Context, Duration, Effect, Fiber, Schema } from 'effect';
 import { describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
@@ -15,6 +16,8 @@ vi.mock('ai', async (importOriginal) => {
 		generateText: vi.fn(),
 	};
 });
+
+const actual = await vi.importActual<typeof AiSdk>('ai');
 
 describe('generateText', () => {
 	test('wraps promise and returns result', () => {
@@ -101,6 +104,28 @@ describe('generateText', () => {
 			});
 
 			expect(onStepFinishSpy).toHaveBeenCalledWith(stepResult);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
+	});
+
+	test('runs an Effect passed as onStepError when the model call throws', () => {
+		vi.mocked(AiSdk.generateText).mockImplementation(actual.generateText);
+		const boom = new Error('model failed');
+		const errors: unknown[] = [];
+
+		return Effect.gen(function* () {
+			const error = yield* generateText({
+				model: new MockLanguageModelV4({
+					doGenerate: async () => {
+						throw boom;
+					},
+				}),
+				prompt: 'test',
+				maxRetries: 0,
+				onStepError: (event) => Effect.sync(() => errors.push(event.error)),
+			}).pipe(Effect.flip);
+
+			expect(error).toBeInstanceOf(AiError);
+			expect(errors).toEqual([boom]);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
 	});
 
