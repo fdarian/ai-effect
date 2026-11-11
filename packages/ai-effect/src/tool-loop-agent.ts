@@ -132,8 +132,12 @@ type EffectifyCallParams<P, R> = P extends unknown
 /**
  * Lets `createAgentUIStream` build the per-call SDK agent. A symbol key keeps
  * it off the public surface; it is not re-exported from the package entry.
+ * `Symbol.for` so an agent made by another copy of ai-effect still works with
+ * this copy's `createAgentUIStream`.
  */
-export const AGENT_TRACING_HOOKS = Symbol('ai-effect/tool-loop-agent/hooks');
+export const AGENT_TRACING_HOOKS: unique symbol = Symbol.for(
+	'ai-effect/agent-tracing',
+);
 
 export type AgentCallTracing = {
 	readonly call: CallSpan;

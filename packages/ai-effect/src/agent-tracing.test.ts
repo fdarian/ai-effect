@@ -967,6 +967,20 @@ describe('createAgentUIStream spans', () => {
 		consoleError.mockRestore();
 	});
 
+	test('an agent exposes its hooks under a global symbol so another ai-effect copy interoperates', async () => {
+		const tracer = makeTestTracer();
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* makeAgent(streamModel(textChunks('Hi')));
+				const foreign = { [Symbol.for('ai-effect/agent-tracing')]: undefined };
+				expect(Object.getOwnPropertySymbols(agent)).toEqual(
+					Object.getOwnPropertySymbols(foreign),
+				);
+			}),
+			tracer,
+		);
+	});
+
 	test('invalid uiMessages end the span with the InvalidRequestError', async () => {
 		const tracer = makeTestTracer();
 		await run(
