@@ -16,3 +16,4 @@ export { rerank } from '#src/rerank.ts';
 export * from '#src/schema.ts';
 export { streamText } from '#src/stream-text.ts';
 export { tool } from '#src/tool.ts';
+export { type ToolLoopAgent, toolLoopAgent } from '#src/tool-loop-agent.ts';
