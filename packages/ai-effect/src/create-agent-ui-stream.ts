@@ -1,7 +1,7 @@
 import * as AiSdk from 'ai';
 import { Effect, Stream } from 'effect';
 import { Ai } from '#src/ai.ts';
-import { AiError } from '#src/ai-error.ts';
+import { AiError, InvalidRequestError } from '#src/ai-error.ts';
 import {
 	abortOnInterrupt,
 	combineAbortSignals,
@@ -126,6 +126,16 @@ export function createAgentUIStream<
 			reason: reasonFromSdkError(cause),
 		});
 
+	// Before any chunk, a TypeValidationError can only come from validating the
+	// caller's `uiMessages`, not model output, so it isn't retryable.
+	const failedStart = (cause: unknown) =>
+		AiSdk.TypeValidationError.isInstance(cause)
+			? new AiError({
+					method: 'createAgentUIStream',
+					reason: new InvalidRequestError({ message: cause.message, cause }),
+				})
+			: failed(cause);
+
 	return Effect.gen(function* () {
 		const ai = yield* Ai;
 		const runPromise = yield* makeRunPromise<R>();
@@ -155,7 +165,7 @@ export function createAgentUIStream<
 					MESSAGE_METADATA,
 					UI_MESSAGE
 				>),
-			catch: failed,
+			catch: failedStart,
 		}).pipe(
 			Effect.onInterrupt(() => Effect.sync(() => callController.abort())),
 		);

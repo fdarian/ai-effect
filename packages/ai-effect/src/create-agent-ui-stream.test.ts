@@ -12,7 +12,7 @@ import {
 } from 'effect';
 import { describe, expect, expectTypeOf, test } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AiError, InvalidOutputError } from '#src/ai-error.ts';
+import { AiError, InvalidRequestError } from '#src/ai-error.ts';
 import { createAgentUIStream } from '#src/create-agent-ui-stream.ts';
 import { ToolLoopAgent } from '#src/tool-loop-agent.ts';
 
@@ -89,7 +89,7 @@ describe('createAgentUIStream', () => {
 			expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain('hi');
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
-	test('invalid uiMessages fail the outer Effect with an AiError', () =>
+	test('invalid uiMessages fail the outer Effect with a non-retryable InvalidRequestError', () =>
 		Effect.gen(function* () {
 			const agent = yield* ToolLoopAgent.make({ model: textModel('hello') });
 
@@ -100,7 +100,8 @@ describe('createAgentUIStream', () => {
 
 			expect(error).toBeInstanceOf(AiError);
 			expect(error.method).toBe('createAgentUIStream');
-			expect(error.reason).toBeInstanceOf(InvalidOutputError);
+			expect(error.reason).toBeInstanceOf(InvalidRequestError);
+			expect(error.isRetryable).toBe(false);
 			expect(AiSdk.TypeValidationError.isInstance(error.reason.cause)).toBe(
 				true,
 			);
