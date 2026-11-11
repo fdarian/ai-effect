@@ -7,16 +7,16 @@ type ReasonFields = {
 	statusCode?: number;
 };
 
-export class RateLimitError extends Data.TaggedClass('RateLimitError')<
-	ReasonFields & { retryAfter?: Duration.Duration }
-> {
+export class RateLimitError extends Data.TaggedClass(
+	'ai-effect/RateLimitError',
+)<ReasonFields & { retryAfter?: Duration.Duration }> {
 	get isRetryable() {
 		return true;
 	}
 }
 
 export class AuthenticationError extends Data.TaggedClass(
-	'AuthenticationError',
+	'ai-effect/AuthenticationError',
 )<ReasonFields> {
 	get isRetryable() {
 		return false;
@@ -24,19 +24,19 @@ export class AuthenticationError extends Data.TaggedClass(
 }
 
 export class InvalidRequestError extends Data.TaggedClass(
-	'InvalidRequestError',
+	'ai-effect/InvalidRequestError',
 )<ReasonFields> {
 	get isRetryable() {
 		return false;
 	}
 }
 
-export class ProviderError extends Data.TaggedClass('ProviderError')<
+export class ProviderError extends Data.TaggedClass('ai-effect/ProviderError')<
 	ReasonFields & { isRetryable: boolean }
 > {}
 
 export class InvalidOutputError extends Data.TaggedClass(
-	'InvalidOutputError',
+	'ai-effect/InvalidOutputError',
 )<ReasonFields> {
 	get isRetryable() {
 		return true;
@@ -44,7 +44,7 @@ export class InvalidOutputError extends Data.TaggedClass(
 }
 
 export class UnknownError extends Data.TaggedClass(
-	'UnknownError',
+	'ai-effect/UnknownError',
 )<ReasonFields> {
 	get isRetryable() {
 		return false;

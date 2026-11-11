@@ -149,14 +149,14 @@ const recipe = generateText({
 
 A failed `generateText` or `streamText` call fails the effect with one `AiError` (tag `ai-effect/AiError`). It has the `method` that failed and a `reason` describing why, plus `message` and `isRetryable` derived from the reason.
 
-| `reason._tag`         | Cause                                                                                    | `isRetryable`               |
-| --------------------- | ---------------------------------------------------------------------------------------- | --------------------------- |
-| `RateLimitError`      | HTTP 429; `retryAfter` is a `Duration` parsed from the `retry-after` header when present | yes                         |
-| `AuthenticationError` | HTTP 401 or 403                                                                          | no                          |
-| `InvalidRequestError` | HTTP 400, 404, 409 or 422, or a bad prompt, argument, model or unsupported feature       | no                          |
-| `ProviderError`       | HTTP 5xx, or a network failure with no status                                            | the SDK's own `isRetryable` |
-| `InvalidOutputError`  | the model returned no output, or output that failed parsing, validation or tool lookup   | yes                         |
-| `UnknownError`        | anything else, including errors thrown by your own code                                  | no                          |
+| `reason._tag`                   | Cause                                                                                    | `isRetryable`               |
+| ------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------- |
+| `ai-effect/RateLimitError`      | HTTP 429; `retryAfter` is a `Duration` parsed from the `retry-after` header when present | yes                         |
+| `ai-effect/AuthenticationError` | HTTP 401 or 403                                                                          | no                          |
+| `ai-effect/InvalidRequestError` | HTTP 400, 404, 409 or 422, or a bad prompt, argument, model or unsupported feature       | no                          |
+| `ai-effect/ProviderError`       | HTTP 5xx, or a network failure with no status                                            | the SDK's own `isRetryable` |
+| `ai-effect/InvalidOutputError`  | the model returned no output, or output that failed parsing, validation or tool lookup   | yes                         |
+| `ai-effect/UnknownError`        | anything else, including errors thrown by your own code                                  | no                          |
 
 Every reason has a `message` and a `cause` holding the raw SDK error, and a `statusCode` when the provider returned one. If the SDK retried and gave up, `cause` is the last underlying error rather than the SDK's retry wrapper.
 
@@ -171,10 +171,13 @@ const reply = generateText({
 	prompt: 'Hello!',
 }).pipe(
 	Effect.map((result) => result.text),
-	Effect.catchReason('ai-effect/AiError', 'RateLimitError', (reason) =>
-		Effect.logWarning('rate limited', reason.retryAfter).pipe(
-			Effect.as('Fallback response'),
-		),
+	Effect.catchReason(
+		'ai-effect/AiError',
+		'ai-effect/RateLimitError',
+		(reason) =>
+			Effect.logWarning('rate limited', reason.retryAfter).pipe(
+				Effect.as('Fallback response'),
+			),
 	),
 );
 ```

@@ -68,10 +68,13 @@ describe('generateText', () => {
 				model: {} as AiSdk.LanguageModel,
 				prompt: 'test',
 			}).pipe(
-				Effect.catchReason('ai-effect/AiError', 'RateLimitError', (reason) =>
-					Effect.succeed(
-						Duration.toMillis(reason.retryAfter as Duration.Duration),
-					),
+				Effect.catchReason(
+					'ai-effect/AiError',
+					'ai-effect/RateLimitError',
+					(reason) =>
+						Effect.succeed(
+							Duration.toMillis(reason.retryAfter as Duration.Duration),
+						),
 				),
 			);
 
