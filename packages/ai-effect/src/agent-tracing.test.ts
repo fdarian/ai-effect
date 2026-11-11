@@ -990,6 +990,43 @@ describe('createAgentUIStream spans', () => {
 		);
 	});
 
+	test('a failed setup leaves no abort listener behind on the signals', async () => {
+		const tracer = makeTestTracer();
+		const open = new Set<unknown>();
+		const add = AbortSignal.prototype.addEventListener;
+		const remove = AbortSignal.prototype.removeEventListener;
+		vi.spyOn(AbortSignal.prototype, 'addEventListener').mockImplementation(
+			function (this: AbortSignal, type, listener, options) {
+				if (type === 'abort') open.add(listener);
+				return add.call(this, type, listener, options);
+			},
+		);
+		vi.spyOn(AbortSignal.prototype, 'removeEventListener').mockImplementation(
+			function (this: AbortSignal, type, listener, options) {
+				if (type === 'abort') open.delete(listener);
+				return remove.call(this, type, listener, options);
+			},
+		);
+		try {
+			await run(
+				Effect.gen(function* () {
+					const agent = yield* makeAgent(streamModel(textChunks('Hi')));
+					yield* createAgentUIStream({
+						agent,
+						uiMessages: [{ not: 'a message' }],
+					}).pipe(Effect.flip);
+
+					// Checked before the `Ai` layer closes: closing aborts its signal,
+					// which would run and remove a leaked listener.
+					expect(open.size).toBe(0);
+				}),
+				tracer,
+			);
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
 	test('a model-start failure ends the span with the AiError', async () => {
 		const tracer = makeTestTracer();
 		await run(

@@ -94,6 +94,8 @@ export type CallSpan = {
 	readonly annotate: (attributes: Record<string, unknown>) => void;
 	/** Synchronous and idempotent: the first exit wins. */
 	readonly finish: (exit: Exit.Exit<unknown, unknown>) => void;
+	/** Runs when the span finishes, however that happens, so cleanup can't be skipped by a finish path that doesn't know about it. */
+	readonly onFinish: (cleanup: () => void) => void;
 };
 
 /**
@@ -112,6 +114,7 @@ export const makeCallSpan = (
 		const clock = yield* Clock.Clock;
 		const timingEnabled = yield* References.TracerTimingEnabled;
 		let finished = false;
+		const cleanups: Array<() => void> = [];
 		return {
 			span,
 			annotate: (attributes) => {
@@ -122,9 +125,14 @@ export const makeCallSpan = (
 			finish: (exit) => {
 				if (finished) return;
 				finished = true;
+				for (const cleanup of cleanups) cleanup();
 				const errorType = errorTypeOf(failureOf(exit));
 				if (errorType !== undefined) span.attribute('error.type', errorType);
 				span.end(timingEnabled ? clock.currentTimeNanosUnsafe() : 0n, exit);
+			},
+			onFinish: (cleanup) => {
+				if (finished) cleanup();
+				else cleanups.push(cleanup);
 			},
 		};
 	});
@@ -351,10 +359,7 @@ export function streamLifecycleCallbacks(
 	const aiError = (reason: AiErrorReason) =>
 		Exit.fail(new AiError({ method: options.method, reason }));
 
-	const finish = (exit: Exit.Exit<unknown, unknown>) => {
-		options.signal.removeEventListener('abort', finishAbortedBySignal);
-		call.finish(exit);
-	};
+	const finish = call.finish;
 
 	/** The SDK's own timeouts never reach `options.signal`, so `onAbort` passes the reason it saw. */
 	function finishAborted(reason: unknown) {
@@ -372,6 +377,9 @@ export function streamLifecycleCallbacks(
 	options.signal.addEventListener('abort', finishAbortedBySignal, {
 		once: true,
 	});
+	call.onFinish(() =>
+		options.signal.removeEventListener('abort', finishAbortedBySignal),
+	);
 	if (options.signal.aborted) finishAbortedBySignal();
 
 	const failWith = (error: unknown) =>

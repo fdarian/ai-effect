@@ -226,7 +226,7 @@ describe('streamLifecycleCallbacks', () => {
 				signal: options.signal,
 				interruptSignals: options.interruptSignals ?? [],
 			});
-			return { ...lifecycle, span: spanNamed(tracer.spans, 'stream') };
+			return { ...lifecycle, call, span: spanNamed(tracer.spans, 'stream') };
 		}).pipe(Effect.provide(tracer.layer), Effect.runPromise);
 	};
 
@@ -392,4 +392,20 @@ describe('streamLifecycleCallbacks', () => {
 			expect(Exit.isSuccess(endedExit(result.span))).toBe(true);
 		});
 	});
+
+	test.each([
+		{ name: 'success', exit: Exit.void },
+		{ name: 'failure', exit: Exit.fail(new Error('setup')) },
+	])(
+		'the abort listener is removed when the span finishes with a $name',
+		async (options) => {
+			const controller = new AbortController();
+			const remove = vi.spyOn(controller.signal, 'removeEventListener');
+			const result = await setup({ signal: controller.signal });
+
+			result.call.finish(options.exit);
+
+			expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+		},
+	);
 });
