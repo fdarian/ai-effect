@@ -511,6 +511,42 @@ describe('ToolLoopAgent.make interruption', () => {
 			expect(signal.aborted).toBe(true);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
+	test('interrupting stream before the SDK call returns aborts the call', () =>
+		Effect.gen(function* () {
+			const preparing = yield* Deferred.make<void>();
+			const release = yield* Deferred.make<void>();
+			const reached = yield* Deferred.make<AbortSignal>();
+			const model = new MockLanguageModelV4({
+				doStream: async (options) => {
+					Effect.runSync(
+						Deferred.succeed(reached, options.abortSignal as AbortSignal),
+					);
+					return { stream: new ReadableStream() };
+				},
+			});
+			const agent = yield* ToolLoopAgent.make({
+				model,
+				prepareCall: async (options) => {
+					Effect.runSync(Deferred.succeed(preparing, undefined));
+					await Effect.runPromise(Deferred.await(release));
+					return options;
+				},
+			});
+
+			const fiber = yield* agent
+				.stream({ prompt: 'test' })
+				.pipe(Effect.forkChild);
+			yield* Deferred.await(preparing).pipe(Effect.timeout('1 second'));
+
+			yield* Fiber.interrupt(fiber);
+			yield* Deferred.succeed(release, undefined);
+			const signal = yield* Deferred.await(reached).pipe(
+				Effect.timeout('1 second'),
+			);
+
+			expect(signal.aborted).toBe(true);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
 	test('honours a call-level abortSignal for stream', () =>
 		Effect.gen(function* () {
 			const reached = yield* Deferred.make<AbortSignal>();

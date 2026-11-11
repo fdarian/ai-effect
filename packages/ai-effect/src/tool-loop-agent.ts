@@ -247,7 +247,9 @@ function make<
 								method: 'ToolLoopAgent.stream',
 								reason: reasonFromSdkError(cause),
 							}),
-					});
+					}).pipe(
+						Effect.onInterrupt(() => Effect.sync(() => callController.abort())),
+					);
 
 					return makeStreamTextResult(
 						'ToolLoopAgent.stream',
