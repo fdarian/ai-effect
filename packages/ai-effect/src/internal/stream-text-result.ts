@@ -9,6 +9,7 @@ import {
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
+import type { StreamEnd } from '#src/internal/tracing.ts';
 
 type RawStreamTextResult<
 	TOOLS extends AiSdk.ToolSet,
@@ -115,14 +116,22 @@ const abortReason = (cause: unknown) =>
 	new AbortedError({ message: 'aborted', cause });
 
 // The getters tee the base stream (and the output ones can throw), so read
-// them once per run, not when the result is built.
+// them once per run, not when the result is built. `Stream.onEnd` skips early
+// stops like `Stream.take`, so `streamEnd.closed` only fires when the SDK's
+// stream actually completed.
 const streamFromGetter = <A>(
 	getter: () => AsyncIterable<A>,
 	failed: (cause: unknown) => AiError,
+	streamEnd: StreamEnd,
 ) =>
 	Stream.unwrap(
 		Effect.try({ try: getter, catch: failed }).pipe(
-			Effect.map((iterable) => Stream.fromAsyncIterable(iterable, failed)),
+			Effect.map((iterable) =>
+				Stream.fromAsyncIterable(iterable, (cause) => {
+					streamEnd.failed(cause);
+					return failed(cause);
+				}).pipe(Stream.onEnd(Effect.sync(streamEnd.closed))),
+			),
 		),
 	);
 
@@ -135,6 +144,7 @@ export function makeStreamTextResult<
 	raw: RawStreamTextResult<TOOLS, RUNTIME_CONTEXT, OUTPUT>,
 	controller: AbortController,
 	tools: TOOLS | undefined,
+	streamEnd: StreamEnd,
 ): StreamTextResult<TOOLS, RUNTIME_CONTEXT, OUTPUT> {
 	const toAiError = (reason: AiErrorReason) => new AiError({ method, reason });
 	const failed = (cause: unknown) => toAiError(reasonFromSdkError(cause));
@@ -143,13 +153,14 @@ export function makeStreamTextResult<
 	const abortStream = abortOnInterrupt(controller);
 
 	const partStream = () =>
-		abortStream(streamFromGetter(() => raw.stream, failed));
+		abortStream(streamFromGetter(() => raw.stream, failed, streamEnd));
 
 	// textStream, partialOutputStream and elementStream silently drop these
 	// parts, so a second pass over a fresh tee surfaces them as failures.
 	const failOnErrorOrAbortPart = streamFromGetter(
 		() => raw.stream,
 		failed,
+		streamEnd,
 	).pipe(
 		Stream.mapEffect((part) => {
 			if (part.type === 'error') {
@@ -165,7 +176,7 @@ export function makeStreamTextResult<
 
 	const view = <A>(getter: () => AsyncIterable<A>) =>
 		abortStream(
-			streamFromGetter(getter, failed).pipe(
+			streamFromGetter(getter, failed, streamEnd).pipe(
 				Stream.concat(failOnErrorOrAbortPart),
 			),
 		);
@@ -210,7 +221,10 @@ export function makeStreamTextResult<
 	for (const key of STREAM_TEXT_EFFECT_KEYS) {
 		effects[key] = Effect.tryPromise({
 			try: async () => raw[key],
-			catch: failed,
+			catch: (cause) => {
+				streamEnd.failed(cause);
+				return failed(cause);
+			},
 		}).pipe(Effect.onInterrupt(() => abort));
 	}
 

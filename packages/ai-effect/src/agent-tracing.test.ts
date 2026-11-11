@@ -12,7 +12,12 @@ import {
 } from 'effect';
 import { describe, expect, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AbortedError, AiError, InvalidRequestError } from '#src/ai-error.ts';
+import {
+	AbortedError,
+	AiError,
+	AuthenticationError,
+	InvalidRequestError,
+} from '#src/ai-error.ts';
 import { createAgentUIStream } from '#src/create-agent-ui-stream.ts';
 import { createUIMessageStream } from '#src/create-ui-message-stream.ts';
 import {
@@ -558,6 +563,74 @@ describe('ToolLoopAgent.stream spans', () => {
 		);
 	});
 
+	test('a stream error keeps the end attributes on the failed span', async () => {
+		const tracer = makeTestTracer();
+		const consoleError = vi
+			.spyOn(console, 'error')
+			.mockImplementation(() => undefined);
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: streamModel([
+						{ type: 'stream-start', warnings: [] },
+						{ type: 'error', error: unauthorized() },
+					]),
+					maxRetries: 0,
+				});
+				const result = yield* agent.stream({ prompt: 'hi' });
+				yield* Stream.runDrain(result.stream);
+
+				const span = spanNamed(tracer.spans, 'invoke_agent a');
+				yield* Effect.promise(() => settled(() => endedExit(span)));
+				expect(aiErrorOf(span).reason).toBeInstanceOf(AuthenticationError);
+				expect(attributesOf(span)['gen_ai.response.finish_reasons']).toEqual([
+					'error',
+				]);
+			}),
+			tracer,
+		);
+		consoleError.mockRestore();
+	});
+
+	test.each([
+		{ step: 0, name: 'step 1' },
+		{ step: 1, name: 'step 2 after a tool step' },
+	])('prepareStep throwing on $name fails the span', async (options) => {
+		const tracer = makeTestTracer();
+		const consoleError = vi
+			.spyOn(console, 'error')
+			.mockImplementation(() => undefined);
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: toolThenTextStreamModel(),
+					maxRetries: 0,
+					stopWhen: AiSdk.isStepCount(3),
+					tools: {
+						weather: AiSdk.tool({
+							inputSchema: weatherInput,
+							execute: async () => 'sunny',
+						}),
+					},
+					prepareStep: ({ stepNumber }) => {
+						if (stepNumber === options.step) throw unauthorized();
+						return undefined;
+					},
+				});
+				const result = yield* agent.stream({ prompt: 'hi' });
+				yield* Stream.runDrain(result.stream);
+
+				const span = spanNamed(tracer.spans, 'invoke_agent a');
+				yield* Effect.promise(() => settled(() => endedExit(span)));
+				expect(aiErrorOf(span).reason).toBeInstanceOf(AuthenticationError);
+			}),
+			tracer,
+		);
+		consoleError.mockRestore();
+	});
+
 	test('without a user onError the SDK default of logging the error is kept', async () => {
 		const tracer = makeTestTracer();
 		const consoleError = vi
@@ -815,6 +888,63 @@ describe('createAgentUIStream spans', () => {
 			yield* Scope.close(scope, Exit.void);
 			expect(Exit.hasInterrupts(endedExit(span))).toBe(true);
 		}).pipe(Effect.runPromise);
+	});
+
+	test('a stream error keeps the end attributes on the failed span', async () => {
+		const tracer = makeTestTracer();
+		const consoleError = vi
+			.spyOn(console, 'error')
+			.mockImplementation(() => undefined);
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: streamModel([
+						{ type: 'stream-start', warnings: [] },
+						{ type: 'error', error: unauthorized() },
+					]),
+					maxRetries: 0,
+				});
+				const stream = yield* createAgentUIStream({ agent, uiMessages });
+				yield* Stream.runDrain(stream);
+
+				const span = spanNamed(tracer.spans, 'invoke_agent a');
+				yield* Effect.promise(() => settled(() => endedExit(span)));
+				expect(aiErrorOf(span).reason).toBeInstanceOf(AuthenticationError);
+				expect(attributesOf(span)['gen_ai.response.finish_reasons']).toEqual([
+					'error',
+				]);
+			}),
+			tracer,
+		);
+		consoleError.mockRestore();
+	});
+
+	test('prepareStep throwing on step 1 fails the span', async () => {
+		const tracer = makeTestTracer();
+		const consoleError = vi
+			.spyOn(console, 'error')
+			.mockImplementation(() => undefined);
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: streamModel(textChunks('Hi')),
+					maxRetries: 0,
+					prepareStep: () => {
+						throw unauthorized();
+					},
+				});
+				const stream = yield* createAgentUIStream({ agent, uiMessages });
+				yield* Stream.runDrain(stream);
+
+				const span = spanNamed(tracer.spans, 'invoke_agent a');
+				yield* Effect.promise(() => settled(() => endedExit(span)));
+				expect(aiErrorOf(span).reason).toBeInstanceOf(AuthenticationError);
+			}),
+			tracer,
+		);
+		consoleError.mockRestore();
 	});
 
 	test('invalid uiMessages end the span with the InvalidRequestError', async () => {

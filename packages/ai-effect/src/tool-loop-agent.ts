@@ -367,15 +367,14 @@ function make<
 									callController.signal,
 									params.abortSignal,
 								);
-								// The agent settings have no `streamRetries`, so the SDK never retries.
+								const lifecycle = streamLifecycleCallbacks(call, {
+									method: 'ToolLoopAgent.stream',
+									signal: abortSignal,
+									userSignal: params.abortSignal,
+								});
 								const sdkAgent = yield* buildSdkAgent({
 									call,
-									callbacks: streamLifecycleCallbacks(call, {
-										method: 'ToolLoopAgent.stream',
-										signal: abortSignal,
-										userSignal: params.abortSignal,
-										errorMayBeRetried: false,
-									}),
+									callbacks: lifecycle.callbacks,
 								});
 
 								// Not the fiber's signal: the stream outlives this Effect.
@@ -411,6 +410,7 @@ function make<
 									raw,
 									callController,
 									agent.tools,
+									lifecycle.streamEnd,
 								);
 							}),
 					);

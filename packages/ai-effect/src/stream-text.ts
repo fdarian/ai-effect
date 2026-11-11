@@ -123,7 +123,6 @@ export function streamText<
 						method: 'streamText',
 						signal: abortSignal,
 						userSignal: params.abortSignal,
-						errorMayBeRetried: streamRetries !== undefined,
 					});
 
 					const raw = yield* Effect.try({
@@ -131,11 +130,16 @@ export function streamText<
 							AiSdk.streamText({
 								...params,
 								...wrapped,
-								...composeCallbacks(wrapped, lifecycle, TEXT_CALLBACK_ALIASES, {
-									// Setting `onError` replaces the SDK's default logger.
-									onError: ({ error }: { error: unknown }) =>
-										console.error(error),
-								}),
+								...composeCallbacks(
+									wrapped,
+									lifecycle.callbacks,
+									TEXT_CALLBACK_ALIASES,
+									{
+										// Setting `onError` replaces the SDK's default logger.
+										onError: ({ error }: { error: unknown }) =>
+											console.error(error),
+									},
+								),
 								...streamRetriesOverride,
 								...(tools === undefined ? {} : { tools }),
 								abortSignal,
@@ -152,6 +156,7 @@ export function streamText<
 						raw,
 						callController,
 						params.tools,
+						lifecycle.streamEnd,
 					);
 				}),
 		);

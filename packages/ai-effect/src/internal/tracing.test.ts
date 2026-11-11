@@ -217,18 +217,16 @@ describe('streamLifecycleCallbacks', () => {
 	const setup = (options: {
 		signal: AbortSignal;
 		userSignal?: AbortSignal;
-		errorMayBeRetried?: boolean;
 	}) => {
 		const tracer = makeTestTracer();
 		return Effect.gen(function* () {
 			const call = yield* makeCallSpan('stream', {});
-			const callbacks = streamLifecycleCallbacks(call, {
+			const lifecycle = streamLifecycleCallbacks(call, {
 				method: 'streamText',
 				signal: options.signal,
 				userSignal: options.userSignal,
-				errorMayBeRetried: options.errorMayBeRetried ?? false,
 			});
-			return { callbacks, span: spanNamed(tracer.spans, 'stream') };
+			return { ...lifecycle, span: spanNamed(tracer.spans, 'stream') };
 		}).pipe(Effect.provide(tracer.layer), Effect.runPromise);
 	};
 
@@ -267,76 +265,109 @@ describe('streamLifecycleCallbacks', () => {
 		expect(Exit.hasInterrupts(endedExit(result.span))).toBe(true);
 	});
 
-	test('onEnd after the span has failed does not overwrite the failure', async () => {
-		const result = await setup({ signal: new AbortController().signal });
-		result.callbacks.onError({ error: new Error('real') });
-		result.callbacks.onEnd({
-			finishReason: 'error',
-			totalUsage: {
-				inputTokens: undefined,
-				outputTokens: undefined,
-				inputTokenDetails: {
-					cacheReadTokens: undefined,
-					cacheWriteTokens: undefined,
-				},
-				outputTokenDetails: { reasoningTokens: undefined },
+	const endEvent = (finishReason: string) => ({
+		finishReason,
+		totalUsage: {
+			inputTokens: 3,
+			outputTokens: undefined,
+			inputTokenDetails: {
+				cacheReadTokens: undefined,
+				cacheWriteTokens: undefined,
 			},
-			finalStep: { response: { id: 'r', modelId: 'm' } },
-		});
-		expect(Exit.isFailure(endedExit(result.span))).toBe(true);
-		expect(attributesOf(result.span)['error.type']).toBe(
-			'ai-effect/UnknownError',
-		);
+			outputTokenDetails: { reasoningTokens: undefined },
+		},
+		finalStep: { response: { id: 'r', modelId: 'm' } },
+	});
+	const open = () => setup({ signal: new AbortController().signal });
+
+	test('onError only records the error, the span stays open', async () => {
+		const result = await open();
+		result.callbacks.onError({ error: new Error('transient') });
+		expect(result.span.status._tag).toBe('Started');
 	});
 
-	describe('when the SDK may retry an error', () => {
-		const endEvent = (finishReason: string) => ({
-			finishReason,
-			totalUsage: {
-				inputTokens: undefined,
-				outputTokens: undefined,
-				inputTokenDetails: {
-					cacheReadTokens: undefined,
-					cacheWriteTokens: undefined,
-				},
-				outputTokenDetails: { reasoningTokens: undefined },
-			},
-			finalStep: { response: { id: 'r', modelId: 'm' } },
+	test('onEnd fails with the pending error after setting the end attributes', async () => {
+		const result = await open();
+		result.callbacks.onError({ error: new TypeError('first') });
+		result.callbacks.onError({ error: new Error('last') });
+		result.callbacks.onEnd(endEvent('error'));
+		expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+		expect(attributesOf(result.span)).toMatchObject({
+			'error.type': 'ai-effect/UnknownError',
+			'gen_ai.usage.input_tokens': 3,
 		});
-		const retryable = () =>
-			setup({
-				signal: new AbortController().signal,
-				errorMayBeRetried: true,
-			});
+	});
 
-		test('onError only records the error', async () => {
-			const result = await retryable();
-			result.callbacks.onError({ error: new Error('transient') });
-			expect(result.span.status._tag).toBe('Started');
-		});
+	test('a step that ends without an error finish reason clears the pending error', async () => {
+		const result = await open();
+		result.callbacks.onError({ error: new Error('transient') });
+		result.callbacks.onStepEnd({ finishReason: 'stop' });
+		result.callbacks.onEnd(endEvent('stop'));
+		expect(Exit.isSuccess(endedExit(result.span))).toBe(true);
+	});
 
-		test('onEnd with an error finish reason fails with the recorded error', async () => {
-			const result = await retryable();
-			result.callbacks.onError({ error: new TypeError('first') });
-			result.callbacks.onError({ error: new Error('last') });
-			result.callbacks.onEnd(endEvent('error'));
+	test('a step that ends with an error finish reason keeps the pending error', async () => {
+		const result = await open();
+		result.callbacks.onError({ error: new Error('real') });
+		result.callbacks.onStepEnd({ finishReason: 'error' });
+		result.callbacks.onEnd(endEvent('error'));
+		expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+	});
+
+	test('an error after the last step still fails the span at onEnd', async () => {
+		const result = await open();
+		result.callbacks.onStepEnd({ finishReason: 'tool-calls' });
+		result.callbacks.onError({ error: new Error('step 2 setup') });
+		result.callbacks.onEnd(endEvent('tool-calls'));
+		expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+	});
+
+	test('onStepError ends the span as a failure', async () => {
+		const result = await open();
+		result.callbacks.onStepError({ error: new Error('step') });
+		expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+	});
+
+	test('onEnd after the span has failed does not overwrite the failure', async () => {
+		const result = await open();
+		result.callbacks.onStepError({ error: new Error('real') });
+		result.callbacks.onEnd(endEvent('stop'));
+		expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+	});
+
+	describe('when the SDK stream ends without onEnd or onAbort', () => {
+		test('closing fails with the pending error', async () => {
+			const result = await open();
+			result.callbacks.onError({ error: new Error('real') });
+			result.streamEnd.closed();
 			expect(Exit.isFailure(endedExit(result.span))).toBe(true);
 			expect(attributesOf(result.span)['error.type']).toBe(
 				'ai-effect/UnknownError',
 			);
 		});
 
-		test('onEnd with any other finish reason succeeds, the retry recovered', async () => {
-			const result = await retryable();
-			result.callbacks.onError({ error: new Error('transient') });
-			result.callbacks.onEnd(endEvent('stop'));
-			expect(Exit.isSuccess(endedExit(result.span))).toBe(true);
+		test('closing with nothing pending fails with the missing output', async () => {
+			const result = await open();
+			result.streamEnd.closed();
+			expect(attributesOf(result.span)['error.type']).toBe(
+				'ai-effect/InvalidOutputError',
+			);
 		});
 
-		test('onStepError still ends the span as a failure', async () => {
-			const result = await retryable();
-			result.callbacks.onStepError({ error: new Error('step') });
-			expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+		test('failing prefers the pending error over the stream error', async () => {
+			const result = await open();
+			result.callbacks.onError({ error: new TypeError('real') });
+			result.streamEnd.failed(new Error('no output generated'));
+			expect(attributesOf(result.span)['error.type']).toBe(
+				'ai-effect/UnknownError',
+			);
+		});
+
+		test('closing after onEnd does not overwrite the success', async () => {
+			const result = await open();
+			result.callbacks.onEnd(endEvent('stop'));
+			result.streamEnd.closed();
+			expect(Exit.isSuccess(endedExit(result.span))).toBe(true);
 		});
 	});
 });

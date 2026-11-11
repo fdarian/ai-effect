@@ -160,15 +160,14 @@ export function createAgentUIStream<
 						callController.signal,
 						params.abortSignal,
 					);
-					// The agent settings have no `streamRetries`, so the SDK never retries.
+					const lifecycle = streamLifecycleCallbacks(call, {
+						method: 'createAgentUIStream',
+						signal: abortSignal,
+						userSignal: params.abortSignal,
+					});
 					const agent = yield* hooks.buildSdkAgent({
 						call,
-						callbacks: streamLifecycleCallbacks(call, {
-							method: 'createAgentUIStream',
-							signal: abortSignal,
-							userSignal: params.abortSignal,
-							errorMayBeRetried: false,
-						}),
+						callbacks: lifecycle.callbacks,
 					});
 
 					// Not the fiber's signal: the stream outlives this Effect.
@@ -198,8 +197,14 @@ export function createAgentUIStream<
 
 					return Stream.fromReadableStream({
 						evaluate: () => uiStream,
-						onError: failed,
-					}).pipe(abortOnInterrupt(callController));
+						onError: (cause) => {
+							lifecycle.streamEnd.failed(cause);
+							return failed(cause);
+						},
+					}).pipe(
+						Stream.onEnd(Effect.sync(lifecycle.streamEnd.closed)),
+						abortOnInterrupt(callController),
+					);
 				}),
 		);
 	});

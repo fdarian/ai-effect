@@ -1,3 +1,4 @@
+import { NoOutputGeneratedError } from 'ai';
 import {
 	Cause,
 	Clock,
@@ -232,6 +233,7 @@ const finiteTokens = (usage: EmbeddingUsage) =>
 
 export type TracingCallbacks = {
 	readonly onStart?: (event: never) => void;
+	readonly onStepEnd?: (event: never) => void;
 	readonly onEnd?: (event: never) => void;
 	readonly onError?: (event: never) => void;
 	readonly onStepError?: (event: never) => void;
@@ -310,6 +312,7 @@ export function composeCallbacks(
 
 export const TEXT_CALLBACK_ALIASES = {
 	onStart: 'experimental_onStart',
+	onStepEnd: 'onStepFinish',
 	onEnd: 'onFinish',
 } as const;
 
@@ -318,10 +321,22 @@ export const START_END_CALLBACK_ALIASES = {
 	onEnd: 'experimental_onEnd',
 } as const;
 
+export type StreamEnd = {
+	/** The SDK's underlying stream completed on its own. */
+	readonly closed: () => void;
+	readonly failed: (error: unknown) => void;
+};
+
 /**
  * Ends the span from the SDK's lifecycle callbacks and the abort signal, never
  * from a result getter: reading `finishReason` drains the stream and hides
  * the real error behind `NoOutputGeneratedError`.
+ *
+ * `onError` only records the error. The SDK calls it before deciding to retry
+ * and keeps running steps and tools afterwards, so the span ends at `onEnd`,
+ * where the error still pending means no retry recovered it. The SDK has paths
+ * that end without `onEnd` or `onAbort` (no step recorded); there `streamEnd`,
+ * driven by the consumer-facing streams, is the backstop.
  */
 export function streamLifecycleCallbacks(
 	call: CallSpan,
@@ -329,8 +344,6 @@ export function streamLifecycleCallbacks(
 		readonly method: Method;
 		readonly signal: AbortSignal;
 		readonly userSignal: AbortSignal | undefined;
-		/** The SDK calls `onError` before it decides to retry, so with retries possible it isn't terminal. */
-		readonly errorMayBeRetried: boolean;
 	},
 ) {
 	const aiError = (reason: AiErrorReason) =>
@@ -355,30 +368,41 @@ export function streamLifecycleCallbacks(
 	options.signal.addEventListener('abort', finishAborted, { once: true });
 	if (options.signal.aborted) finishAborted();
 
-	const failWith = (event: { readonly error: unknown }) =>
-		finish(aiError(reasonFromSdkError(event.error)));
+	const failWith = (error: unknown) =>
+		finish(aiError(reasonFromSdkError(error)));
 
 	const text = textCallbacks(call);
-	let recordedError: { readonly error: unknown } | undefined;
+	let pendingError: { readonly error: unknown } | undefined;
 
-	return {
+	const callbacks = {
 		onStart: text.onStart,
+		onStepEnd: (event: { readonly finishReason: string }) => {
+			if (event.finishReason !== 'error') pendingError = undefined;
+		},
 		onEnd: (event: TextEndEvent) => {
 			text.onEnd(event);
-			if (event.finishReason === 'error' && recordedError !== undefined) {
-				failWith(recordedError);
-				return;
-			}
-			finish(Exit.void);
+			if (pendingError === undefined) finish(Exit.void);
+			else failWith(pendingError.error);
 		},
 		onError: (event: { readonly error: unknown }) => {
-			if (options.errorMayBeRetried) {
-				recordedError = event;
-				return;
-			}
-			failWith(event);
+			pendingError = event;
 		},
-		onStepError: failWith,
+		onStepError: (event: { readonly error: unknown }) => failWith(event.error),
 		onAbort: finishAborted,
 	};
+
+	const streamEnd: StreamEnd = {
+		closed: () =>
+			failWith(
+				pendingError === undefined
+					? new NoOutputGeneratedError({
+							message: 'The stream ended without output.',
+						})
+					: pendingError.error,
+			),
+		failed: (error) =>
+			failWith(pendingError === undefined ? error : pendingError.error),
+	};
+
+	return { callbacks, streamEnd };
 }
