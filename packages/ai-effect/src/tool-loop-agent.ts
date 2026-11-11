@@ -9,6 +9,10 @@ import {
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
+import {
+	makeStreamTextResult,
+	type StreamTextResult,
+} from '#src/internal/stream-text-result.ts';
 
 // `onStepError`, `onError` and `onAbort` can only be set on the settings: the
 // SDK doesn't accept them per call.
@@ -74,14 +78,6 @@ type GenerateTextResult<
 	OUTPUT extends AiSdk.Output.Output,
 > = Awaited<
 	ReturnType<SdkAgent<never, TOOLS, RUNTIME_CONTEXT, OUTPUT>['generate']>
->;
-
-type StreamTextResult<
-	TOOLS extends AiSdk.ToolSet,
-	RUNTIME_CONTEXT extends Record<string, unknown>,
-	OUTPUT extends AiSdk.Output.Output,
-> = Awaited<
-	ReturnType<SdkAgent<never, TOOLS, RUNTIME_CONTEXT, OUTPUT>['stream']>
 >;
 
 /**
@@ -222,16 +218,18 @@ function make<
 					const ai = yield* Ai;
 					const callRunPromise = yield* makeRunPromise<CALL_R>();
 
-					// The layer signal, not the fiber's: the stream outlives this Effect.
-					return yield* Effect.tryPromise({
+					const callController = new AbortController();
+					const signals = [ai.abortSignal, callController.signal];
+					if (params.abortSignal !== undefined)
+						signals.push(params.abortSignal);
+
+					// Not the fiber's signal: the stream outlives this Effect.
+					const raw = yield* Effect.tryPromise({
 						try: () =>
 							agent.stream({
 								...params,
 								...wrapCallbacks(callRunPromise, params, CALL_CALLBACK_KEYS),
-								abortSignal:
-									params.abortSignal === undefined
-										? ai.abortSignal
-										: AbortSignal.any([ai.abortSignal, params.abortSignal]),
+								abortSignal: AbortSignal.any(signals),
 							} as OriginalStreamParams<
 								CALL_OPTIONS,
 								TOOLS,
@@ -244,6 +242,12 @@ function make<
 								reason: reasonFromSdkError(cause),
 							}),
 					});
+
+					return makeStreamTextResult(
+						'ToolLoopAgent.stream',
+						raw,
+						callController,
+					);
 				}),
 		};
 	});
