@@ -2,6 +2,7 @@ import * as AiSdk from 'ai';
 import { Effect } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
+import { combineAbortSignals } from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
@@ -102,10 +103,7 @@ export function generateText<
 				AiSdk.generateText({
 					...params,
 					...wrapCallbacks(runPromise, params, GENERATE_TEXT_CALLBACK_KEYS),
-					abortSignal:
-						params.abortSignal === undefined
-							? signal
-							: AbortSignal.any([signal, params.abortSignal]),
+					abortSignal: combineAbortSignals(signal, params.abortSignal),
 				} as OriginalGenerateTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
 			catch: (cause) =>
 				new AiError({

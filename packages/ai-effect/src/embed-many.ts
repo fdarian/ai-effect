@@ -2,6 +2,7 @@ import * as AiSdk from 'ai';
 import { Effect } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
+import { combineAbortSignals } from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
@@ -51,10 +52,7 @@ export function embedMany<
 				AiSdk.embedMany({
 					...params,
 					...wrapCallbacks(runPromise, params, EMBED_MANY_CALLBACK_KEYS),
-					abortSignal:
-						params.abortSignal === undefined
-							? signal
-							: AbortSignal.any([signal, params.abortSignal]),
+					abortSignal: combineAbortSignals(signal, params.abortSignal),
 				} as OriginalEmbedManyDef<RUNTIME_CONTEXT>),
 			catch: (cause) =>
 				new AiError({
