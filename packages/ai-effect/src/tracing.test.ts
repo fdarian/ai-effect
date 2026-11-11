@@ -4,18 +4,8 @@ import {
 	MockLanguageModelV4,
 	MockRerankingModelV4,
 } from 'ai/test';
-import {
-	Effect,
-	Exit,
-	Fiber,
-	Layer,
-	Option,
-	Schema,
-	Scope,
-	Stream,
-} from 'effect';
+import { Effect, Exit, Fiber, Layer, Option, Scope, Stream } from 'effect';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import z from 'zod/v4';
 import { Ai } from '#src/ai.ts';
 import { AbortedError, AiError, AuthenticationError } from '#src/ai-error.ts';
 import { embed } from '#src/embed.ts';
@@ -27,102 +17,24 @@ import {
 	makeTestTracer,
 	parentSpanId,
 	spanNamed,
-	spansNamed,
 } from '#src/internal/test-tracer.ts';
+import {
+	finishChunk,
+	generateModel,
+	hangingModel,
+	run,
+	streamModel,
+	streamOf,
+	textChunks,
+	weatherInput,
+} from '#src/internal/tracing-test-helpers.ts';
 import { rerank } from '#src/rerank.ts';
 import { streamText } from '#src/stream-text.ts';
-import { tool } from '#src/tool.ts';
 
 vi.mock('ai', async (importOriginal) => {
 	const actual = await importOriginal<typeof AiSdk>();
 	return { ...actual, streamText: vi.fn(actual.streamText) };
 });
-
-const usage = {
-	inputTokens: { total: 3, noCache: 1, cacheRead: 2, cacheWrite: undefined },
-	outputTokens: { total: 10, text: 6, reasoning: 4 },
-};
-
-const finishChunk = (unified: 'stop' | 'tool-calls' = 'stop') => ({
-	type: 'finish' as const,
-	usage,
-	finishReason: { unified, raw: unified },
-});
-
-const textChunks = (...deltas: string[]) => [
-	{ type: 'stream-start' as const, warnings: [] },
-	{
-		type: 'response-metadata' as const,
-		id: 'resp-1',
-		modelId: 'resp-model',
-	},
-	{ type: 'text-start' as const, id: '1' },
-	...deltas.map((delta) => ({ type: 'text-delta' as const, id: '1', delta })),
-	{ type: 'text-end' as const, id: '1' },
-	finishChunk(),
-];
-
-const toolCallChunks = (toolName: string) => [
-	{ type: 'stream-start' as const, warnings: [] },
-	{
-		type: 'tool-call' as const,
-		toolCallId: 'call-1',
-		toolName,
-		input: '{"city":"Paris"}',
-	},
-	finishChunk('tool-calls'),
-];
-
-const streamOf = (
-	chunks: ReadonlyArray<unknown>,
-	options?: { open: boolean },
-) =>
-	new ReadableStream({
-		start(controller) {
-			for (const chunk of chunks) controller.enqueue(chunk);
-			if (options?.open !== true) controller.close();
-		},
-	});
-
-const streamModel = (chunks: ReadonlyArray<unknown>) =>
-	new MockLanguageModelV4({
-		doStream: async () => ({ stream: streamOf(chunks) as never }),
-	});
-
-/** Emits the chunks, then stays open until the SDK aborts it. */
-const hangingModel = (chunks: ReadonlyArray<unknown>) =>
-	new MockLanguageModelV4({
-		doStream: async () => ({
-			stream: streamOf(chunks, { open: true }) as never,
-		}),
-	});
-
-const generateModel = (
-	content: unknown[] = [{ type: 'text', text: 'hello' }],
-	unified: 'stop' | 'tool-calls' = 'stop',
-) =>
-	new MockLanguageModelV4({
-		provider: 'openai.chat',
-		modelId: 'gpt-test',
-		doGenerate: async () => ({
-			content: content as never,
-			finishReason: { unified, raw: unified },
-			usage,
-			warnings: [],
-			response: { id: 'resp-1', modelId: 'resp-model', timestamp: new Date() },
-		}),
-	});
-
-const weatherInput = z.object({ city: z.string() });
-
-const run = <A, E>(
-	effect: Effect.Effect<A, E, Ai>,
-	tracer: ReturnType<typeof makeTestTracer>,
-) =>
-	effect.pipe(
-		Effect.provide(Layer.merge(Ai.layer, tracer.layer)),
-		Effect.runPromise,
-	);
 
 const aiErrorOf = (span: Parameters<typeof endedExit>[0]) => {
 	const error = Option.getOrUndefined(Exit.findErrorOption(endedExit(span)));
@@ -290,269 +202,6 @@ describe('generateText spans', () => {
 			expect(attributes['gen_ai.usage.input_tokens']).toBe(3);
 		},
 	);
-});
-
-describe('tool spans', () => {
-	const toolCallModel = () =>
-		generateModel(
-			[
-				{
-					type: 'tool-call',
-					toolCallId: 'call-1',
-					toolName: 'weather',
-					input: '{"city":"Paris"}',
-				},
-			],
-			'tool-calls',
-		);
-
-	test('an ai-effect tool is parented under the call span, not where tool() ran', async () => {
-		const tracer = makeTestTracer();
-		await run(
-			Effect.gen(function* () {
-				const weather = yield* tool({
-					description: 'Get the weather',
-					inputSchema: Schema.Struct({ city: Schema.String }),
-					execute: () => Effect.succeed('sunny').pipe(Effect.withSpan('inner')),
-				}).pipe(Effect.withSpan('built-here'));
-
-				yield* generateText({
-					model: toolCallModel(),
-					prompt: 'hi',
-					tools: { weather },
-				}).pipe(Effect.withSpan('called-here'));
-			}),
-			tracer,
-		);
-
-		const callSpan = spanNamed(tracer.spans, 'ai-effect.generateText');
-		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
-		expect(parentSpanId(callSpan)).toBe(
-			spanNamed(tracer.spans, 'called-here').spanId,
-		);
-		expect(parentSpanId(toolSpan)).toBe(callSpan.spanId);
-		expect(parentSpanId(spanNamed(tracer.spans, 'inner'))).toBe(
-			toolSpan.spanId,
-		);
-		expect(toolSpan.kind).toBe('internal');
-		expect(Exit.isSuccess(endedExit(toolSpan))).toBe(true);
-		expect(attributesOf(toolSpan)).toEqual({
-			'gen_ai.operation.name': 'execute_tool',
-			'gen_ai.tool.name': 'weather',
-			'gen_ai.tool.call.id': 'call-1',
-			'gen_ai.tool.type': 'function',
-			'gen_ai.tool.description': 'Get the weather',
-		});
-	});
-
-	test('a foreign promise tool gets a span', async () => {
-		const tracer = makeTestTracer();
-		const weather = AiSdk.tool({
-			inputSchema: weatherInput,
-			execute: async (input) => `sunny in ${input.city}`,
-		});
-		const result = await run(
-			generateText({
-				model: toolCallModel(),
-				prompt: 'hi',
-				tools: { weather },
-			}),
-			tracer,
-		);
-
-		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
-		expect(parentSpanId(toolSpan)).toBe(
-			spanNamed(tracer.spans, 'ai-effect.generateText').spanId,
-		);
-		expect(Exit.isSuccess(endedExit(toolSpan))).toBe(true);
-		expect(result.toolResults.at(0)?.output).toBe('sunny in Paris');
-	});
-
-	test('a foreign synchronous tool gets a span', async () => {
-		const tracer = makeTestTracer();
-		const weather = AiSdk.tool({
-			inputSchema: weatherInput,
-			execute: () => 'sunny',
-		});
-		await run(
-			generateText({
-				model: toolCallModel(),
-				prompt: 'hi',
-				tools: { weather },
-			}),
-			tracer,
-		);
-
-		expect(
-			Exit.isSuccess(
-				endedExit(spanNamed(tracer.spans, 'execute_tool weather')),
-			),
-		).toBe(true);
-	});
-
-	test('a foreign AsyncIterable tool keeps its preliminary results and ends on done', async () => {
-		const tracer = makeTestTracer();
-		const weather = AiSdk.tool({
-			inputSchema: weatherInput,
-			async *execute() {
-				yield 'partial';
-				yield 'sunny';
-			},
-		});
-		const result = await run(
-			generateText({
-				model: toolCallModel(),
-				prompt: 'hi',
-				tools: { weather },
-			}),
-			tracer,
-		);
-
-		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
-		expect(Exit.isSuccess(endedExit(toolSpan))).toBe(true);
-		expect(result.toolResults.at(0)?.output).toBe('sunny');
-	});
-
-	test('a tool without execute passes through untouched', async () => {
-		const tracer = makeTestTracer();
-		const weather = AiSdk.tool({ inputSchema: weatherInput });
-		await run(
-			generateText({
-				model: toolCallModel(),
-				prompt: 'hi',
-				tools: { weather },
-			}),
-			tracer,
-		);
-
-		expect(spansNamed(tracer.spans, 'execute_tool weather')).toEqual([]);
-	});
-
-	test('an ai-effect tool failure records its _tag as error.type', async () => {
-		class WeatherDown extends Schema.TaggedError<WeatherDown>()(
-			'WeatherDown',
-			{},
-		) {}
-		const tracer = makeTestTracer();
-		await run(
-			Effect.gen(function* () {
-				const weather = yield* tool({
-					inputSchema: Schema.Struct({ city: Schema.String }),
-					execute: () => new WeatherDown(),
-				});
-				yield* generateText({
-					model: toolCallModel(),
-					prompt: 'hi',
-					tools: { weather },
-				});
-			}),
-			tracer,
-		);
-
-		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
-		expect(Exit.isFailure(endedExit(toolSpan))).toBe(true);
-		expect(attributesOf(toolSpan)['error.type']).toBe('WeatherDown');
-	});
-
-	test('a foreign tool failure records the Error name and rethrows it unchanged', async () => {
-		const tracer = makeTestTracer();
-		const boom = new TypeError('boom');
-		const weather = AiSdk.tool({
-			inputSchema: weatherInput,
-			execute: async (): Promise<string> => {
-				throw boom;
-			},
-		});
-		const errors: unknown[] = [];
-		await run(
-			generateText({
-				model: toolCallModel(),
-				prompt: 'hi',
-				tools: { weather },
-				onToolExecutionEnd: (event) =>
-					Effect.sync(() => {
-						if (event.toolOutput.type === 'tool-error') {
-							errors.push(event.toolOutput.error);
-						}
-					}),
-			}),
-			tracer,
-		);
-
-		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
-		expect(Exit.isFailure(endedExit(toolSpan))).toBe(true);
-		expect(attributesOf(toolSpan)['error.type']).toBe('TypeError');
-		expect(errors).toEqual([boom]);
-	});
-
-	test('a synchronously throwing foreign tool ends its span and rethrows', async () => {
-		const tracer = makeTestTracer();
-		const boom = new RangeError('sync boom');
-		const weather = AiSdk.tool({
-			inputSchema: weatherInput,
-			execute: (): string => {
-				throw boom;
-			},
-		});
-		await run(
-			generateText({
-				model: toolCallModel(),
-				prompt: 'hi',
-				tools: { weather },
-			}),
-			tracer,
-		);
-
-		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
-		expect(attributesOf(toolSpan)['error.type']).toBe('RangeError');
-	});
-
-	test('a tool still works outside any wrapper, without a span', async () => {
-		const tracer = makeTestTracer();
-		const output = await run(
-			Effect.gen(function* () {
-				const weather = yield* tool({
-					inputSchema: Schema.Struct({ city: Schema.String }),
-					execute: (input) => Effect.succeed(`sunny in ${input.city}`),
-				});
-				const execute = weather.execute;
-				if (execute === undefined) throw new Error('no execute');
-				return yield* Effect.promise(async () =>
-					execute(
-						{ city: 'Paris' },
-						{ toolCallId: 'c', messages: [], context: {} },
-					),
-				);
-			}),
-			tracer,
-		);
-
-		expect(output).toBe('sunny in Paris');
-		expect(spansNamed(tracer.spans, 'execute_tool weather')).toEqual([]);
-	});
-
-	test('streamText tool spans parent under the streamText span', async () => {
-		const tracer = makeTestTracer();
-		await run(
-			Effect.gen(function* () {
-				const weather = yield* tool({
-					inputSchema: Schema.Struct({ city: Schema.String }),
-					execute: () => Effect.succeed('sunny'),
-				});
-				const result = yield* streamText({
-					model: streamModel(toolCallChunks('weather')),
-					prompt: 'hi',
-					tools: { weather },
-				});
-				yield* Stream.runDrain(result.stream);
-			}),
-			tracer,
-		);
-
-		expect(parentSpanId(spanNamed(tracer.spans, 'execute_tool weather'))).toBe(
-			spanNamed(tracer.spans, 'ai-effect.streamText').spanId,
-		);
-	});
 });
 
 describe('streamText spans', () => {

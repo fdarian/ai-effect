@@ -2,7 +2,7 @@ import * as AiSdk from 'ai';
 import { Effect, Schema } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { makeRunPromise, wrapCallback } from '#src/internal/callbacks.ts';
-import { markInstrumentable } from '#src/internal/tracing.ts';
+import { markInstrumentable } from '#src/internal/tool-tracing.ts';
 import { effectSchema } from '#src/schema.ts';
 
 type OriginalToolDef<

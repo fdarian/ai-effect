@@ -14,9 +14,9 @@ import {
 	makeStreamTextResult,
 	type StreamTextResult,
 } from '#src/internal/stream-text-result.ts';
+import { rebindTools } from '#src/internal/tool-tracing.ts';
 import {
 	composeCallbacks,
-	rebindTools,
 	streamLifecycleCallbacks,
 	TEXT_CALLBACK_ALIASES,
 	textRequestAttributes,

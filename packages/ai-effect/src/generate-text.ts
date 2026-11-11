@@ -9,9 +9,9 @@ import {
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
+import { rebindTools } from '#src/internal/tool-tracing.ts';
 import {
 	composeCallbacks,
-	rebindTools,
 	TEXT_CALLBACK_ALIASES,
 	textCallbacks,
 	textRequestAttributes,
