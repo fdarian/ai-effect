@@ -256,15 +256,15 @@ const resilient = generateText({
 
 Every wrapper opens an Effect span, so calls show up in whichever tracer you already provide, such as [`@effect/opentelemetry`](https://effect.website). Nothing to enable.
 
-| Wrapper                                      | Span name                                                           | Kind     |
-| -------------------------------------------- | ------------------------------------------------------------------- | -------- |
-| `generateText`, `streamText`                 | `ai-effect.generateText`, `ai-effect.streamText`                    | internal |
-| `ToolLoopAgent` `generate` / `stream`        | `invoke_agent {id}`, or `ai-effect.ToolLoopAgent.generate` / `.stream` without an `id` | internal |
-| `createAgentUIStream`                        | `invoke_agent {id}`, or `ai-effect.createAgentUIStream`             | internal |
-| `createUIMessageStream`                      | `ai-effect.createUIMessageStream`                                   | internal |
-| `embed`, `embedMany`                         | `embeddings {modelId}`                                              | client   |
-| `rerank`                                     | `rerank {modelId}`                                                  | client   |
-| each tool with an `execute`, inside a wrapper | `execute_tool {name}`, a child of the call's span                   | internal |
+| Wrapper                                       | Span name                                                                              | Kind     |
+| --------------------------------------------- | -------------------------------------------------------------------------------------- | -------- |
+| `generateText`, `streamText`                  | `ai-effect.generateText`, `ai-effect.streamText`                                       | internal |
+| `ToolLoopAgent` `generate` / `stream`         | `invoke_agent {id}`, or `ai-effect.ToolLoopAgent.generate` / `.stream` without an `id` | internal |
+| `createAgentUIStream`                         | `invoke_agent {id}`, or `ai-effect.createAgentUIStream`                                | internal |
+| `createUIMessageStream`                       | `ai-effect.createUIMessageStream`                                                      | internal |
+| `embed`, `embedMany`                          | `embeddings {modelId}`                                                                 | client   |
+| `rerank`                                      | `rerank {modelId}`                                                                     | client   |
+| each tool with an `execute`, inside a wrapper | `execute_tool {name}`, a child of the call's span                                      | internal |
 
 Spans carry the [OpenTelemetry GenAI](https://opentelemetry.io/docs/specs/semconv/gen-ai/) attributes: `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.*` (model and the sampling settings you set), and, once the call finishes, `gen_ai.response.*`, `gen_ai.usage.*` (input, output, cache and reasoning tokens) and `gen_ai.response.finish_reasons`. Tool spans have `gen_ai.tool.*`. A failed call sets `error.type`. Prompts, completions and tool inputs and outputs are never recorded.
 
@@ -280,26 +280,32 @@ A stream's span ends when the SDK finishes, errors or aborts, not when the effec
 <details>
 <summary>Alongside <code>@ai-sdk/otel</code></summary>
 
-The AI SDK's own `@ai-sdk/otel` spans (`invoke_agent`, `chat`, `execute_tool`) nest under ours, in the same trace, as long as OpenTelemetry has a global `AsyncLocalStorageContextManager`. `NodeSdk.layer` from `@effect/opentelemetry` does not register one, and without it the SDK's spans start a separate trace.
+The AI SDK's own `@ai-sdk/otel` spans (`invoke_agent`, `chat`, `execute_tool`) nest under ours, in the same trace, as long as OpenTelemetry has a global `AsyncLocalStorageContextManager`. `NodeSdk.layer` from `@effect/opentelemetry` does not register one, and without it the SDK's spans start a separate trace. Minimal setup:
 
 ```ts
 import { OpenTelemetry } from '@ai-sdk/otel';
-import { NodeSdk } from '@effect/opentelemetry';
-import { context } from '@opentelemetry/api';
+import { OtelTracer } from '@effect/opentelemetry';
+import { context, trace } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
-import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import {
+	BasicTracerProvider,
+	BatchSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { registerTelemetry } from 'ai';
 
+trace.setGlobalTracerProvider(
+	new BasicTracerProvider({
+		spanProcessors: [new BatchSpanProcessor(exporter)],
+	}),
+);
 context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 registerTelemetry(new OpenTelemetry());
 
-const TracingLayer = NodeSdk.layer(() => ({
-	resource: { serviceName: 'my-app' },
-	spanProcessor: new BatchSpanProcessor(exporter),
-}));
+// provide next to Ai.layer
+const TracingLayer = OtelTracer.layerGlobal;
 ```
 
-`NodeSdk.layer` also registers the global tracer provider that `@ai-sdk/otel` reads. Provide `TracingLayer` next to `Ai.layer`. Both libraries report token usage, so the numbers appear on our wrapper span and on the SDK's.
+Both integrations report token usage, so the numbers appear on our wrapper span and on the SDK's. `@ai-sdk/otel` reads the global tracer provider, which `NodeSdk.layer` doesn't set; register one as above or pass a `tracer` to `new OpenTelemetry()`.
 
 </details>
 
