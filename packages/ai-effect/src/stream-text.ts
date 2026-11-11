@@ -9,6 +9,10 @@ import {
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
+import {
+	makeStreamTextResult,
+	type StreamTextResult,
+} from '#src/internal/stream-text-result.ts';
 
 const STREAM_TEXT_CALLBACK_KEYS = [
 	...GENERATE_TEXT_CALLBACK_KEYS,
@@ -23,12 +27,6 @@ type OriginalStreamTextDef<
 	RUNTIME_CONTEXT extends Record<string, unknown>,
 	OUTPUT extends AiSdk.Output.Output,
 > = Parameters<typeof AiSdk.streamText<TOOLS, RUNTIME_CONTEXT, OUTPUT>>[0];
-
-type StreamTextResult<
-	TOOLS extends AiSdk.ToolSet,
-	RUNTIME_CONTEXT extends Record<string, unknown>,
-	OUTPUT extends AiSdk.Output.Output,
-> = ReturnType<typeof AiSdk.streamText<TOOLS, RUNTIME_CONTEXT, OUTPUT>>;
 
 /** Same deferred-`Parameters` inference problem as {@link EffectGenerateTextDef}. */
 type EffectStreamTextDef<
@@ -70,22 +68,24 @@ export function streamText<
 		const ai = yield* Ai;
 		const runPromise = yield* makeRunPromise<R>();
 
-		try {
-			return AiSdk.streamText({
-				...params,
-				...wrapCallbacks(runPromise, params, STREAM_TEXT_CALLBACK_KEYS),
-				abortSignal:
-					params.abortSignal === undefined
-						? ai.abortSignal
-						: AbortSignal.any([ai.abortSignal, params.abortSignal]),
-			} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>);
-		} catch (cause) {
-			return yield* Effect.fail(
+		const callController = new AbortController();
+		const signals = [ai.abortSignal, callController.signal];
+		if (params.abortSignal !== undefined) signals.push(params.abortSignal);
+
+		const raw = yield* Effect.try({
+			try: () =>
+				AiSdk.streamText({
+					...params,
+					...wrapCallbacks(runPromise, params, STREAM_TEXT_CALLBACK_KEYS),
+					abortSignal: AbortSignal.any(signals),
+				} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
+			catch: (cause) =>
 				new AiError({
 					method: 'streamText',
 					reason: reasonFromSdkError(cause),
 				}),
-			);
-		}
+		});
+
+		return makeStreamTextResult('streamText', raw, callController);
 	});
 }

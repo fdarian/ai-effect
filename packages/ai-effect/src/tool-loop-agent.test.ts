@@ -9,6 +9,7 @@ import {
 	Layer,
 	Schema,
 	Scope,
+	Stream,
 } from 'effect';
 import { describe, expect, expectTypeOf, test } from 'vitest';
 import z from 'zod/v4';
@@ -114,9 +115,18 @@ describe('ToolLoopAgent.make', () => {
 			const agent = yield* ToolLoopAgent.make({ model: textModel('hello') });
 			const result = yield* agent.stream({ prompt: 'test' });
 
-			expect(yield* Effect.promise(() => Promise.resolve(result.text))).toBe(
-				'hello',
-			);
+			expect(yield* result.text).toBe('hello');
+			expect(
+				yield* Effect.promise(() => Promise.resolve(result.raw.text)),
+			).toBe('hello');
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('stream textStream collects the text through an Effect Stream', () =>
+		Effect.gen(function* () {
+			const agent = yield* ToolLoopAgent.make({ model: textModel('hello') });
+			const result = yield* agent.stream({ prompt: 'test' });
+
+			expect(yield* Stream.runCollect(result.textStream)).toEqual(['hello']);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
 	test('accepts messages instead of prompt', () =>
@@ -173,7 +183,7 @@ describe('ToolLoopAgent.make', () => {
 				prompt: 'test',
 				onStepEnd: () => Effect.sync(() => seen.push('call')),
 			});
-			yield* Effect.promise(() => Promise.resolve(result.text));
+			yield* result.text;
 
 			expect(seen.sort()).toEqual(['call', 'settings']);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
@@ -193,7 +203,7 @@ describe('ToolLoopAgent.make', () => {
 			});
 
 			const result = yield* agent.stream({ prompt: 'test' });
-			yield* Effect.promise(() => Promise.resolve(result.consumeStream()));
+			yield* Effect.promise(() => Promise.resolve(result.raw.consumeStream()));
 
 			expect(errors).toHaveLength(1);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
@@ -312,6 +322,36 @@ describe('ToolLoopAgent.make errors', () => {
 			expect((error.reason.cause as Error).message).toBe('prepare failed');
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
+	test('a stream error fails textStream and text with AiError', () =>
+		Effect.gen(function* () {
+			const boom = new Error('boom');
+			const agent = yield* ToolLoopAgent.make({
+				model: new MockLanguageModelV4({
+					doStream: async () => ({
+						stream: new ReadableStream({
+							start(controller) {
+								controller.error(boom);
+							},
+						}),
+					}),
+				}),
+				maxRetries: 0,
+			});
+			const result = yield* agent.stream({ prompt: 'test' });
+
+			const streamError = yield* Stream.runCollect(result.textStream).pipe(
+				Effect.flip,
+			);
+			expect(streamError).toBeInstanceOf(AiError);
+			expect(streamError.method).toBe('ToolLoopAgent.stream');
+			expect(streamError.reason.cause).toBe(boom);
+
+			const textError = yield* result.text.pipe(Effect.flip);
+			expect(textError).toBeInstanceOf(AiError);
+			expect(textError.method).toBe('ToolLoopAgent.stream');
+			expect(textError.reason.cause).toBe(boom);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
 	test('invalid call options fail with AiError', () =>
 		Effect.gen(function* () {
 			const agent = yield* ToolLoopAgent.make({
@@ -421,6 +461,46 @@ describe('ToolLoopAgent.make interruption', () => {
 			expect(signal.aborted).toBe(true);
 		}).pipe(Effect.runPromise));
 
+	test('interrupting a textStream consumer aborts the call', () =>
+		Effect.gen(function* () {
+			const reached = yield* Deferred.make<AbortSignal>();
+			const gotChunk = yield* Deferred.make<void>();
+			const model = new MockLanguageModelV4({
+				doStream: async (options) => {
+					Effect.runSync(
+						Deferred.succeed(reached, options.abortSignal as AbortSignal),
+					);
+					return {
+						stream: new ReadableStream({
+							start(controller) {
+								controller.enqueue({ type: 'stream-start', warnings: [] });
+								controller.enqueue({ type: 'text-start', id: 't' });
+								controller.enqueue({
+									type: 'text-delta',
+									id: 't',
+									delta: 'hi',
+								});
+							},
+						}),
+					};
+				},
+			});
+			const agent = yield* ToolLoopAgent.make({ model });
+			const result = yield* agent.stream({ prompt: 'test' });
+
+			const fiber = yield* Stream.runDrain(
+				result.textStream.pipe(
+					Stream.tap(() => Deferred.succeed(gotChunk, undefined)),
+				),
+			).pipe(Effect.forkChild);
+			yield* Deferred.await(gotChunk).pipe(Effect.timeout('1 second'));
+			const signal = yield* Deferred.await(reached);
+			expect(signal.aborted).toBe(false);
+
+			yield* Fiber.interrupt(fiber);
+			expect(signal.aborted).toBe(true);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
 	test('honours a call-level abortSignal for stream', () =>
 		Effect.gen(function* () {
 			const reached = yield* Deferred.make<AbortSignal>();
@@ -513,6 +593,20 @@ describe('type-level regressions', () => {
 		expectTypeOf<Result['output']>().toEqualTypeOf<{
 			readonly userId: string;
 		}>();
+	});
+
+	test('stream returns the Effect-typed result', () => {
+		typeOnly(() => {
+			const agent = {} as ToolLoopAgent;
+			const program = agent.stream({ prompt: 'hi' });
+			type Result = Effect.Success<typeof program>;
+			expectTypeOf<Result['text']>().toEqualTypeOf<
+				Effect.Effect<string, AiError>
+			>();
+			expectTypeOf<Result['textStream']>().toEqualTypeOf<
+				Stream.Stream<string, AiError>
+			>();
+		});
 	});
 
 	test('infers TOOLS into `tools` and into the result', () => {

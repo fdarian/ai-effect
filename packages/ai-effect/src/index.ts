@@ -12,6 +12,7 @@ export {
 export { embed } from '#src/embed.ts';
 export { embedMany } from '#src/embed-many.ts';
 export { generateText } from '#src/generate-text.ts';
+export type { StreamTextResult } from '#src/internal/stream-text-result.ts';
 export { rerank } from '#src/rerank.ts';
 export * from '#src/schema.ts';
 export { streamText } from '#src/stream-text.ts';
