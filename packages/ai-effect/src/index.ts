@@ -1,5 +1,6 @@
 export * from '#src/ai.ts';
 export {
+	AbortedError,
 	AiError,
 	type AiErrorReason,
 	AuthenticationError,

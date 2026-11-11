@@ -1,6 +1,7 @@
 import * as AiSdk from 'ai';
 import { Duration } from 'effect';
 import {
+	AbortedError,
 	type AiErrorReason,
 	AuthenticationError,
 	InvalidOutputError,
@@ -30,6 +31,34 @@ const INVALID_OUTPUT_ERRORS = [
 	AiSdk.InvalidToolInputError,
 	AiSdk.NoSuchToolError,
 ];
+
+const ABORT_ERROR_NAMES = new Set([
+	'AbortError',
+	'ResponseAborted',
+	'TimeoutError',
+]);
+
+const MAX_ABORT_CAUSE_DEPTH = 5;
+
+const isAbortLike = (error: unknown) =>
+	(error instanceof Error ||
+		(typeof DOMException === 'function' && error instanceof DOMException)) &&
+	ABORT_ERROR_NAMES.has(error.name);
+
+/** Mirrors ai's unexported `isCausedByAbort`; providers wrap aborts as the `cause` of an `APICallError`. */
+function isCausedByAbort(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < MAX_ABORT_CAUSE_DEPTH; depth++) {
+		if (isAbortLike(current)) {
+			return true;
+		}
+		if (!(current instanceof Error) || current.cause === undefined) {
+			return false;
+		}
+		current = current.cause;
+	}
+	return false;
+}
 
 const messageOf = (error: unknown) =>
 	error instanceof Error ? error.message : String(error);
@@ -89,6 +118,12 @@ export function reasonFromSdkError(error: unknown): AiErrorReason {
 			? error.lastError
 			: error;
 
+	if (isCausedByAbort(unwrapped)) {
+		return new AbortedError({
+			message: messageOf(unwrapped),
+			cause: unwrapped,
+		});
+	}
 	if (AiSdk.APICallError.isInstance(unwrapped)) {
 		return reasonFromApiCallError(unwrapped);
 	}

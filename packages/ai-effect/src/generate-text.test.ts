@@ -3,7 +3,7 @@ import { MockLanguageModelV4 } from 'ai/test';
 import { Context, Duration, Effect, Fiber, Schema } from 'effect';
 import { describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AiError, UnknownError } from '#src/ai-error.ts';
+import { AbortedError, AiError, UnknownError } from '#src/ai-error.ts';
 import { generateText } from '#src/generate-text.ts';
 import { effectSchema } from '#src/schema.ts';
 import { streamText } from '#src/stream-text.ts';
@@ -224,6 +224,35 @@ describe('generateText interruption', () => {
 
 			yield* Fiber.interrupt(fiber);
 			expect(received?.aborted).toBe(true);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
+	});
+
+	test('fails with AbortedError when the user signal aborts', () => {
+		vi.mocked(AiSdk.generateText).mockImplementation(
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			((params: any) =>
+				new Promise((_resolve, reject) => {
+					params.abortSignal.addEventListener('abort', () =>
+						reject(params.abortSignal.reason),
+					);
+				})) as never,
+		);
+		const userController = new AbortController();
+
+		return Effect.gen(function* () {
+			const fiber = yield* generateText({
+				model: {} as AiSdk.LanguageModel,
+				prompt: 'test',
+				abortSignal: userController.signal,
+			}).pipe(Effect.flip, Effect.forkChild);
+			yield* Effect.yieldNow;
+
+			userController.abort();
+			const error = yield* Fiber.join(fiber);
+
+			expect(error).toBeInstanceOf(AiError);
+			expect(error.method).toBe('generateText');
+			expect(error.reason).toBeInstanceOf(AbortedError);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
 	});
 

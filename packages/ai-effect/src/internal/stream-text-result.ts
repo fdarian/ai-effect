@@ -1,6 +1,6 @@
 import type * as AiSdk from 'ai';
 import { Effect, Exit, Stream } from 'effect';
-import { AiError, type AiErrorReason, UnknownError } from '#src/ai-error.ts';
+import { AbortedError, AiError, type AiErrorReason } from '#src/ai-error.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 
 type RawStreamTextResult<
@@ -81,7 +81,7 @@ export interface StreamTextResult<
 type Method = Extract<AiError['method'], 'streamText' | 'ToolLoopAgent.stream'>;
 
 const abortReason = (cause: unknown) =>
-	new UnknownError({ message: 'aborted', cause });
+	new AbortedError({ message: 'aborted', cause });
 
 // The getters tee the base stream (and the output ones can throw), so read
 // them once per run, not when the result is built.
