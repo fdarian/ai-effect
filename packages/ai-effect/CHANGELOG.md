@@ -1,5 +1,11 @@
 # ai-effect
 
+## 7.1.1
+
+### Patch Changes
+
+- c7a7a16: `AiError.cause` is now the raw SDK error (the same value as `reason.cause`), so code that walks `.cause` chains finds `statusCode` and `responseBody` again.
+
 ## 7.1.0
 
 This release has breaking changes to `AiError` and the `streamText` result, even though it's a minor version. Read **Breaking changes** before you upgrade.
