@@ -60,7 +60,7 @@ export type AiErrorReason =
 	| UnknownError;
 
 export class AiError extends Data.TaggedError('ai-effect/AiError')<{
-	method: 'generateText' | 'streamText';
+	method: 'generateText' | 'streamText' | 'embed' | 'embedMany' | 'rerank';
 	reason: AiErrorReason;
 }> {
 	override get message() {
