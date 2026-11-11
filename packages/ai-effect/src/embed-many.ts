@@ -2,6 +2,7 @@ import * as AiSdk from 'ai';
 import { Effect } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
+import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
 	makeRunPromise,
@@ -55,7 +56,11 @@ export function embedMany<
 							? signal
 							: AbortSignal.any([signal, params.abortSignal]),
 				} as OriginalEmbedManyDef<RUNTIME_CONTEXT>),
-			catch: (cause) => new AiError({ message: 'embedMany failed', cause }),
+			catch: (cause) =>
+				new AiError({
+					method: 'embedMany',
+					reason: reasonFromSdkError(cause),
+				}),
 		});
 	});
 }

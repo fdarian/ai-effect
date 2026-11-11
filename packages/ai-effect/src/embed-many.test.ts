@@ -3,7 +3,7 @@ import { MockEmbeddingModelV4 } from 'ai/test';
 import { Context, Effect, Fiber } from 'effect';
 import { describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AiError } from '#src/ai-error.ts';
+import { AiError, UnknownError } from '#src/ai-error.ts';
 import { embedMany } from '#src/embed-many.ts';
 
 const embedding = [0.1, 0.2, 0.3];
@@ -89,8 +89,11 @@ describe('embedMany', () => {
 			}).pipe(Effect.flip);
 
 			expect(result).toBeInstanceOf(AiError);
-			expect(result.message).toBe('embedMany failed');
-			expect((result.cause as Error).message).toBe('API error');
+			expect(result.method).toBe('embedMany');
+			expect(result.message).toBe('embedMany: API error');
+			expect(result.reason).toBeInstanceOf(UnknownError);
+			expect(result.reason.cause).toBeInstanceOf(Error);
+			expect((result.reason.cause as Error).message).toBe('API error');
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 });
 

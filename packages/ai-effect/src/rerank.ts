@@ -2,6 +2,7 @@ import * as AiSdk from 'ai';
 import { Effect } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
+import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
 	makeRunPromise,
@@ -66,7 +67,11 @@ export function rerank<
 							? signal
 							: AbortSignal.any([signal, params.abortSignal]),
 				} as OriginalRerankDef<VALUE, RUNTIME_CONTEXT>),
-			catch: (cause) => new AiError({ message: 'rerank failed', cause }),
+			catch: (cause) =>
+				new AiError({
+					method: 'rerank',
+					reason: reasonFromSdkError(cause),
+				}),
 		});
 	});
 }

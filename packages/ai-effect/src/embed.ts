@@ -2,6 +2,7 @@ import * as AiSdk from 'ai';
 import { Effect } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
+import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
 	makeRunPromise,
@@ -55,7 +56,11 @@ export function embed<
 							? signal
 							: AbortSignal.any([signal, params.abortSignal]),
 				} as OriginalEmbedDef<RUNTIME_CONTEXT>),
-			catch: (cause) => new AiError({ message: 'embed failed', cause }),
+			catch: (cause) =>
+				new AiError({
+					method: 'embed',
+					reason: reasonFromSdkError(cause),
+				}),
 		});
 	});
 }

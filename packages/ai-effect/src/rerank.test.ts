@@ -3,7 +3,7 @@ import { MockRerankingModelV4 } from 'ai/test';
 import { Context, Effect, Fiber } from 'effect';
 import { describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AiError } from '#src/ai-error.ts';
+import { AiError, UnknownError } from '#src/ai-error.ts';
 import { rerank } from '#src/rerank.ts';
 
 const makeModel = () =>
@@ -93,8 +93,11 @@ describe('rerank', () => {
 			}).pipe(Effect.flip);
 
 			expect(result).toBeInstanceOf(AiError);
-			expect(result.message).toBe('rerank failed');
-			expect((result.cause as Error).message).toBe('API error');
+			expect(result.method).toBe('rerank');
+			expect(result.message).toBe('rerank: API error');
+			expect(result.reason).toBeInstanceOf(UnknownError);
+			expect(result.reason.cause).toBeInstanceOf(Error);
+			expect((result.reason.cause as Error).message).toBe('API error');
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 });
 
