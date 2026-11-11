@@ -2,6 +2,7 @@ import * as AiSdk from 'ai';
 import { Effect } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
+import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
 	makeRunPromise,
@@ -106,7 +107,11 @@ export function generateText<
 							? signal
 							: AbortSignal.any([signal, params.abortSignal]),
 				} as OriginalGenerateTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
-			catch: (cause) => new AiError({ message: 'generateText failed', cause }),
+			catch: (cause) =>
+				new AiError({
+					method: 'generateText',
+					reason: reasonFromSdkError(cause),
+				}),
 		});
 	});
 }

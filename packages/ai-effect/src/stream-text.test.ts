@@ -2,7 +2,7 @@ import * as AiSdk from 'ai';
 import { Deferred, Effect, Exit, Layer, Schema, Scope } from 'effect';
 import { describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AiError } from '#src/ai-error.ts';
+import { AiError, UnknownError } from '#src/ai-error.ts';
 import { effectSchema } from '#src/schema.ts';
 import { streamText } from '#src/stream-text.ts';
 
@@ -44,9 +44,11 @@ describe('streamText', () => {
 			}).pipe(Effect.flip);
 
 			expect(result).toBeInstanceOf(AiError);
-			expect(result.message).toBe('streamText failed');
-			expect(result.cause).toBeInstanceOf(Error);
-			expect((result.cause as Error).message).toBe('stream error');
+			expect(result.method).toBe('streamText');
+			expect(result.message).toBe('streamText: stream error');
+			expect(result.reason).toBeInstanceOf(UnknownError);
+			expect(result.reason.cause).toBeInstanceOf(Error);
+			expect((result.reason.cause as Error).message).toBe('stream error');
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
 	});
 
