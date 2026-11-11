@@ -15,11 +15,11 @@ import {
 	type StreamTextResult,
 } from '#src/internal/stream-text-result.ts';
 
-// `onStepError`, `onError` and `onAbort` can only be set on the settings: the
-// SDK doesn't accept them per call.
+// `onStepError` arrives via GENERATE_TEXT_CALLBACK_KEYS; it, `onError` and
+// `onAbort` can only be set on the settings: the SDK doesn't accept them per
+// call.
 const SETTINGS_CALLBACK_KEYS = [
 	...GENERATE_TEXT_CALLBACK_KEYS,
-	'onStepError',
 	'onError',
 	'onAbort',
 ] as const;

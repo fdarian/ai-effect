@@ -21,6 +21,7 @@ import {
 export const GENERATE_TEXT_CALLBACK_KEYS = [
 	'onStepFinish',
 	'onStepEnd',
+	'onStepError',
 	'onFinish',
 	'onEnd',
 	'onStart',

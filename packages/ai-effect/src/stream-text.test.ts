@@ -328,6 +328,29 @@ describe('streamText result', () => {
 			expect(textError.reason.cause).toBe(boom);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
+	test('runs an Effect passed as onStepError when the model call throws', () => {
+		useRealSdk();
+		const boom = new Error('model failed');
+		const errors: unknown[] = [];
+
+		return Effect.gen(function* () {
+			const result = yield* streamText({
+				model: new MockLanguageModelV4({
+					doStream: async () => {
+						throw boom;
+					},
+				}),
+				prompt: 'test',
+				maxRetries: 0,
+				onError: () => Effect.void,
+				onStepError: (event) => Effect.sync(() => errors.push(event.error)),
+			});
+			yield* Effect.promise(() => Promise.resolve(result.raw.consumeStream()));
+
+			expect(errors).toEqual([boom]);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
+	});
+
 	test('an error chunk fails textStream but stream emits it as a part', () =>
 		Effect.gen(function* () {
 			const chunkError = new Error('chunk error');
