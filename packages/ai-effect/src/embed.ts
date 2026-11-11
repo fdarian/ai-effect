@@ -11,6 +11,14 @@ import {
 	type StartEndCallbackKeys,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
+import {
+	CurrentCallSpan,
+	composeCallbacks,
+	embedCallbacks,
+	modelIdOf,
+	START_END_CALLBACK_ALIASES,
+	withCallSpan,
+} from '#src/internal/tracing.ts';
 
 type OriginalEmbedDef<RUNTIME_CONTEXT extends Record<string, unknown>> =
 	Parameters<typeof AiSdk.embed<RUNTIME_CONTEXT>>[0];
@@ -35,13 +43,20 @@ export function embed<
 	params: EffectEmbedDef<RUNTIME_CONTEXT, R>,
 ): Effect.Effect<EmbedResult<RUNTIME_CONTEXT>, AiError, Ai | R> {
 	return Effect.gen(function* () {
+		const call = yield* CurrentCallSpan;
 		const runPromise = yield* makeRunPromise<R>();
+		const wrapped = wrapCallbacks(runPromise, params, START_END_CALLBACK_KEYS);
 
 		return yield* Effect.tryPromise({
 			try: (signal) =>
 				AiSdk.embed({
 					...params,
-					...wrapCallbacks(runPromise, params, START_END_CALLBACK_KEYS),
+					...wrapped,
+					...composeCallbacks(
+						wrapped,
+						embedCallbacks(call),
+						START_END_CALLBACK_ALIASES,
+					),
 					abortSignal: combineAbortSignals(signal, params.abortSignal),
 				} as OriginalEmbedDef<RUNTIME_CONTEXT>),
 			catch: (cause) =>
@@ -50,5 +65,10 @@ export function embed<
 					reason: reasonFromSdkError(cause),
 				}),
 		});
-	});
+	}).pipe(
+		withCallSpan(`embeddings ${modelIdOf(params.model)}`, {
+			kind: 'client',
+			attributes: { 'gen_ai.operation.name': 'embeddings' },
+		}),
+	);
 }

@@ -12,7 +12,16 @@ import {
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
-import type { ToolLoopAgent } from '#src/tool-loop-agent.ts';
+import {
+	agentSpanName,
+	CurrentCallSpan,
+	streamLifecycleCallbacks,
+	withStreamSpan,
+} from '#src/internal/tracing.ts';
+import {
+	AGENT_TRACING_HOOKS,
+	type ToolLoopAgent,
+} from '#src/tool-loop-agent.ts';
 
 const CREATE_AGENT_UI_STREAM_CALLBACK_KEYS = [
 	'onStepEnd',
@@ -136,10 +145,27 @@ export function createAgentUIStream<
 				})
 			: failed(cause);
 
+	const hooks = params.agent[AGENT_TRACING_HOOKS];
+
 	return Effect.gen(function* () {
 		const ai = yield* Ai;
+		const call = yield* CurrentCallSpan;
 		const runPromise = yield* makeRunPromise<R>();
 		const callController = new AbortController();
+		const abortSignal = combineAbortSignals(
+			ai.abortSignal,
+			callController.signal,
+			params.abortSignal,
+		);
+		const lifecycle = streamLifecycleCallbacks(call, {
+			method: 'createAgentUIStream',
+			signal: abortSignal,
+			interruptSignals: [ai.abortSignal, callController.signal],
+		});
+		const agent = yield* hooks.buildSdkAgent({
+			call,
+			callbacks: lifecycle.callbacks,
+		});
 
 		// Not the fiber's signal: the stream outlives this Effect.
 		const uiStream = yield* Effect.tryPromise({
@@ -151,12 +177,8 @@ export function createAgentUIStream<
 						params,
 						CREATE_AGENT_UI_STREAM_CALLBACK_KEYS,
 					),
-					agent: params.agent.raw,
-					abortSignal: combineAbortSignals(
-						ai.abortSignal,
-						callController.signal,
-						params.abortSignal,
-					),
+					agent,
+					abortSignal,
 				} as OriginalParams<
 					CALL_OPTIONS,
 					TOOLS,
@@ -172,7 +194,18 @@ export function createAgentUIStream<
 
 		return Stream.fromReadableStream({
 			evaluate: () => uiStream,
-			onError: failed,
-		}).pipe(abortOnInterrupt(callController));
-	});
+			onError: (cause) => {
+				lifecycle.streamEnd.failed(cause);
+				return failed(cause);
+			},
+		}).pipe(
+			Stream.onEnd(Effect.sync(lifecycle.streamEnd.closed)),
+			abortOnInterrupt(callController),
+		);
+	}).pipe(
+		withStreamSpan(agentSpanName(params.agent.id, 'createAgentUIStream'), {
+			kind: 'internal',
+			attributes: hooks.requestAttributes(true),
+		}),
+	);
 }

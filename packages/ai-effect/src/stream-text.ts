@@ -14,6 +14,15 @@ import {
 	makeStreamTextResult,
 	type StreamTextResult,
 } from '#src/internal/stream-text-result.ts';
+import { rebindTools } from '#src/internal/tool-tracing.ts';
+import {
+	CurrentCallSpan,
+	composeCallbacks,
+	streamLifecycleCallbacks,
+	TEXT_CALLBACK_ALIASES,
+	textRequestAttributes,
+	withStreamSpan,
+} from '#src/internal/tracing.ts';
 
 const STREAM_TEXT_CALLBACK_KEYS = [
 	...GENERATE_TEXT_CALLBACK_KEYS,
@@ -49,6 +58,20 @@ type EffectStreamTextDef<
 	abortSignal?: AbortSignal;
 };
 
+/**
+ * `0` only differs from omitting `streamRetries` by letting `onError` request
+ * retries, and the SDK buffers tool parts whenever that is possible. Our own
+ * `onError` is always set, so without a user `onError` we omit the `0`.
+ * Takes the settings untyped for the same deferred-generics reason as
+ * `textRequestAttributes`.
+ */
+function sdkStreamRetries(settings: Readonly<Record<string, unknown>>) {
+	const streamRetries = settings.streamRetries;
+	if (typeof streamRetries !== 'number') return undefined;
+	if (streamRetries === 0 && settings.onError === undefined) return undefined;
+	return streamRetries;
+}
+
 export function streamText<
 	TOOLS extends AiSdk.ToolSet = AiSdk.ToolSet,
 	RUNTIME_CONTEXT extends Record<string, unknown> = Record<string, unknown>,
@@ -67,20 +90,51 @@ export function streamText<
 > {
 	return Effect.gen(function* () {
 		const ai = yield* Ai;
+		const call = yield* CurrentCallSpan;
 		const runPromise = yield* makeRunPromise<R>();
+		const wrapped = wrapCallbacks(
+			runPromise,
+			params,
+			STREAM_TEXT_CALLBACK_KEYS,
+		);
 
 		const callController = new AbortController();
+		const abortSignal = combineAbortSignals(
+			ai.abortSignal,
+			callController.signal,
+			params.abortSignal,
+		);
+		const tools = yield* rebindTools<TOOLS>(params.tools, {
+			parent: call.span,
+		});
+		const streamRetries = sdkStreamRetries(params);
+		// Must override `params.streamRetries` with an explicit `undefined`.
+		const streamRetriesOverride = { streamRetries } as {
+			streamRetries?: number;
+		};
+		const lifecycle = streamLifecycleCallbacks(call, {
+			method: 'streamText',
+			signal: abortSignal,
+			interruptSignals: [ai.abortSignal, callController.signal],
+		});
 
 		const raw = yield* Effect.try({
 			try: () =>
 				AiSdk.streamText({
 					...params,
-					...wrapCallbacks(runPromise, params, STREAM_TEXT_CALLBACK_KEYS),
-					abortSignal: combineAbortSignals(
-						ai.abortSignal,
-						callController.signal,
-						params.abortSignal,
+					...wrapped,
+					...composeCallbacks(
+						wrapped,
+						lifecycle.callbacks,
+						TEXT_CALLBACK_ALIASES,
+						{
+							// Setting `onError` replaces the SDK's default logger.
+							onError: ({ error }: { error: unknown }) => console.error(error),
+						},
 					),
+					...streamRetriesOverride,
+					...(tools === undefined ? {} : { tools }),
+					abortSignal,
 				} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
 			catch: (cause) =>
 				new AiError({
@@ -94,6 +148,12 @@ export function streamText<
 			raw,
 			callController,
 			params.tools,
+			lifecycle.streamEnd,
 		);
-	});
+	}).pipe(
+		withStreamSpan('ai-effect.streamText', {
+			kind: 'internal',
+			attributes: textRequestAttributes(params, { stream: true }),
+		}),
+	);
 }

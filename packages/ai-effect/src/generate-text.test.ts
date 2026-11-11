@@ -19,6 +19,22 @@ vi.mock('ai', async (importOriginal) => {
 
 const actual = await vi.importActual<typeof AiSdk>('ai');
 
+/** The slice of the SDK's end event that tracing reads. */
+const completedEvent = {
+	finishReason: 'stop',
+	totalUsage: {
+		inputTokens: 1,
+		outputTokens: 2,
+		inputTokenDetails: {
+			cacheReadTokens: undefined,
+			cacheWriteTokens: undefined,
+		},
+		outputTokenDetails: { reasoningTokens: undefined },
+	},
+	finalStep: { response: { id: 'resp-1', modelId: 'model-1' } },
+	steps: [],
+};
+
 describe('generateText', () => {
 	test('wraps promise and returns result', () => {
 		const mockResult = { text: 'hello', finishReason: 'stop' };
@@ -130,11 +146,11 @@ describe('generateText', () => {
 	});
 
 	test('wraps onFinish callback', () => {
-		const finishEvent = { text: 'done', steps: [], totalUsage: {} };
+		const finishEvent = { ...completedEvent, text: 'done' };
 		vi.mocked(AiSdk.generateText).mockImplementation(
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			(async (params: any) => {
-				if (params.onFinish) await params.onFinish(finishEvent);
+				if (params.onEnd) await params.onEnd(finishEvent);
 				return { text: 'done' };
 			}) as never,
 		);
@@ -155,7 +171,7 @@ describe('generateText', () => {
 	// v7 renamed onFinish -> onEnd and onStepFinish -> onStepEnd; both names
 	// must be wrapped so callers on either name get Effect ergonomics.
 	test('wraps onEnd callback (v7 rename of onFinish)', () => {
-		const endEvent = { text: 'done', steps: [], totalUsage: {} };
+		const endEvent = { ...completedEvent, text: 'done' };
 		vi.mocked(AiSdk.generateText).mockImplementation(
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			(async (params: any) => {

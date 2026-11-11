@@ -7,3 +7,4 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/provider-utils@5.0.79"
   - ai@7.0.169
   - effect@4.1.3
+  - "@ai-sdk/otel@1.0.169"
