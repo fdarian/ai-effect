@@ -87,23 +87,11 @@ export function tool<
 			...(params.outputSchema === undefined
 				? {}
 				: { outputSchema: normalizeToolSchema(params.outputSchema) }),
-			...(params.execute && {
-				execute: (input: INPUT, options: AiSdk.ToolExecutionOptions<CONTEXT>) =>
-					// biome-ignore lint/style/noNonNullAssertion: guarded by truthiness check
-					runPromise(params.execute!(input, options)),
-			}),
+			execute: wrapCallback(runPromise, params.execute),
 			onInputStart: wrapCallback(runPromise, params.onInputStart),
 			onInputDelta: wrapCallback(runPromise, params.onInputDelta),
 			onInputAvailable: wrapCallback(runPromise, params.onInputAvailable),
-			...(params.toModelOutput && {
-				toModelOutput: (options: {
-					toolCallId: string;
-					input: INPUT;
-					output: OUTPUT;
-				}) =>
-					// biome-ignore lint/style/noNonNullAssertion: guarded by truthiness check
-					runPromise(params.toModelOutput!(options)),
-			}),
+			toModelOutput: wrapCallback(runPromise, params.toModelOutput),
 		} as OriginalToolDef<INPUT, OUTPUT, CONTEXT>;
 
 		return AiSdk.tool(originalParams);
