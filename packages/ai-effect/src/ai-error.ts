@@ -85,6 +85,11 @@ export class AiError extends Data.TaggedError('ai-effect/AiError')<{
 		return `${this.method}: ${this.reason.message}`;
 	}
 
+	/** The raw SDK error, so generic `.cause` walkers can reach `statusCode`. */
+	override get cause() {
+		return this.reason.cause;
+	}
+
 	get isRetryable() {
 		return this.reason.isRetryable;
 	}
