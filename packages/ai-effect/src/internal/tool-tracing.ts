@@ -126,7 +126,10 @@ export const rebindTools = <TOOLS extends AiSdk.ToolSet>(
 						'gen_ai.tool.name': name,
 						'gen_ai.tool.call.id': toolCallId,
 						'gen_ai.tool.type': 'function',
-						'gen_ai.tool.description': tool.description,
+						'gen_ai.tool.description':
+							typeof tool.description === 'string'
+								? tool.description
+								: undefined,
 						'gen_ai.agent.name': options.agentName,
 					},
 				}),

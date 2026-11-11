@@ -170,6 +170,36 @@ describe('tool spans', () => {
 		expect(JSON.stringify(result.response.messages)).toContain('20C');
 	});
 
+	test('records a string tool description but not a dynamic one', async () => {
+		const tracer = makeTestTracer();
+		const described = AiSdk.tool({
+			description: 'Weather',
+			inputSchema: weatherInput,
+			execute: async () => 'sunny',
+		});
+		const dynamic = AiSdk.tool({
+			description: () => 'Weather',
+			inputSchema: weatherInput,
+			execute: async () => 'sunny',
+		});
+		for (const weather of [described, dynamic]) {
+			await run(
+				generateText({
+					model: toolCallModel(),
+					prompt: 'hi',
+					tools: { weather },
+				}),
+				tracer,
+			);
+		}
+
+		expect(
+			spansNamed(tracer.spans, 'execute_tool weather').map(
+				(span) => attributesOf(span)['gen_ai.tool.description'],
+			),
+		).toEqual(['Weather', undefined]);
+	});
+
 	test('a foreign AsyncIterable tool keeps its preliminary results and ends on done', async () => {
 		const tracer = makeTestTracer();
 		const weather = AiSdk.tool({
