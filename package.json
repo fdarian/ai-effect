@@ -3,7 +3,9 @@
 	"private": true,
 	"packageManager": "pnpm@12.18.0",
 	"scripts": {
-		"format": "biome check --write"
+		"format": "biome check --write",
+		"ci:version": "changeset version && pnpm install --no-frozen-lockfile",
+		"ci:release": "pnpm --filter ai-effect build && changeset publish"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.6.6",

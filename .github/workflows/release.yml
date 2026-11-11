@@ -1,0 +1,27 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ['.changeset/**']
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: ./.github/actions/setup
+        with: { registry-url: 'https://registry.npmjs.org' }
+      - id: changesets
+        uses: changesets/action@v2
+        with:
+          version-script: bun run ci:version
+          publish-script: bun run ci:release
+          create-github-releases: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
