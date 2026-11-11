@@ -213,6 +213,38 @@ describe('composeCallbacks', () => {
 	});
 });
 
+describe('composeCallbacks when tracing throws', () => {
+	test('still runs the user callback and surfaces the tracing error', () => {
+		const user = vi.fn(() => 'user result');
+		const boom = new Error('tracing failed');
+		const composed = composeCallbacks(
+			{ onEnd: user },
+			{
+				onEnd: () => {
+					throw boom;
+				},
+			},
+			{},
+		);
+
+		expect(() => (composed.onEnd as (event: unknown) => unknown)('e')).toThrow(
+			boom,
+		);
+		expect(user).toHaveBeenCalledWith('e');
+	});
+
+	test('returns the user callback result when tracing succeeds', () => {
+		const composed = composeCallbacks(
+			{ onEnd: () => 'user result' },
+			{ onEnd: () => undefined },
+			{},
+		);
+		expect((composed.onEnd as (event: unknown) => unknown)('e')).toBe(
+			'user result',
+		);
+	});
+});
+
 describe('streamLifecycleCallbacks', () => {
 	const setup = (options: {
 		signal: AbortSignal;

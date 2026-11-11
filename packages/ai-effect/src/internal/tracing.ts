@@ -310,8 +310,16 @@ export function composeCallbacks(
 			(alias === undefined ? undefined : wrapped[alias]) ??
 			fallbacks[key];
 		composed[key] = (event: never) => {
-			trace(event);
-			return typeof user === 'function' ? user(event) : undefined;
+			const runUser = () =>
+				typeof user === 'function' ? user(event) : undefined;
+			try {
+				trace(event);
+			} catch (error) {
+				// A tracing failure must not hide the event from the user's callback.
+				runUser();
+				throw error;
+			}
+			return runUser();
 		};
 		if (alias !== undefined) composed[alias] = undefined;
 	}
