@@ -18,7 +18,7 @@ One file per wrapped SDK function, each with its `.test.ts` beside it:
 - `ai-error.ts` — `AiError` (tag `ai-effect/AiError`, fields `method` and `reason`, `isRetryable` getter) and the `reason` union: `RateLimitError`, `AuthenticationError`, `InvalidRequestError`, `ProviderError`, `InvalidOutputError`, `UnknownError`. Each keeps the raw SDK error as `cause`
 - `generate-text.ts`, `stream-text.ts`, `tool.ts` — the wrappers; the long type comments explain inference workarounds, keep them in sync with `ai`'s types
 - `embed.ts`, `embed-many.ts`, `rerank.ts` — callback-only wrappers (`onStart`/`onEnd`) that need no inference workaround; `rerank`'s `VALUE` constraint is derived from `ai.rerank` because `ai` doesn't export `JSONObject`
-- `tool-loop-agent.ts` — `toolLoopAgent`, an Effect that builds the SDK `ToolLoopAgent`; like `tool`, settings callbacks run with the construction-site context, while `generate`/`stream` callbacks run with the call site's
+- `tool-loop-agent.ts` — `ToolLoopAgent.make`, an Effect that builds the SDK `ToolLoopAgent` (meant to be wrapped in a per-agent service and layer); like `tool`, settings callbacks run with the construction-site context, while `generate`/`stream` callbacks run with the call site's
 - `schema.ts` — `effectSchema`, Effect `Schema` to AI SDK schema
 - `internal/ai-error-from-sdk.ts` — `reasonFromSdkError`, the one place SDK errors are classified into a reason (unwraps `RetryError` first); new SDK error classes get mapped here
 - `internal/callbacks.ts` — Effect-to-Promise callback bridging shared by the wrappers

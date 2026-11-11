@@ -150,7 +150,7 @@ export interface ToolLoopAgent<
 	>;
 }
 
-export function toolLoopAgent<
+function make<
 	CALL_OPTIONS = never,
 	// biome-ignore lint/complexity/noBannedTypes: same default as the SDK's ToolLoopAgent
 	TOOLS extends AiSdk.ToolSet = {},
@@ -248,3 +248,5 @@ export function toolLoopAgent<
 		};
 	});
 }
+
+export const ToolLoopAgent = { make };

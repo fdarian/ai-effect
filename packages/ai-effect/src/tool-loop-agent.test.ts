@@ -16,7 +16,7 @@ import { Ai } from '#src/ai.ts';
 import { AiError, UnknownError } from '#src/ai-error.ts';
 import { effectSchema } from '#src/schema.ts';
 import { tool } from '#src/tool.ts';
-import { type ToolLoopAgent, toolLoopAgent } from '#src/tool-loop-agent.ts';
+import { ToolLoopAgent } from '#src/tool-loop-agent.ts';
 
 const usage = {
 	inputTokens: {
@@ -87,11 +87,11 @@ class CallDep extends Context.Service<CallDep, { value: string }>()('CallDep') {
 	static readonly layer = Layer.succeed(CallDep, { value: 'call-dep' });
 }
 
-describe('toolLoopAgent', () => {
+describe('ToolLoopAgent.make', () => {
 	test('exposes id and tools', () =>
 		Effect.gen(function* () {
 			const slow = yield* tool({ inputSchema: Schema.Struct({}) });
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				id: 'my-agent',
 				model: textModel('hi'),
 				tools: { slow },
@@ -103,7 +103,7 @@ describe('toolLoopAgent', () => {
 
 	test('generate returns the result', () =>
 		Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({ model: textModel('hello') });
+			const agent = yield* ToolLoopAgent.make({ model: textModel('hello') });
 			const result = yield* agent.generate({ prompt: 'test' });
 
 			expect(result.text).toBe('hello');
@@ -111,7 +111,7 @@ describe('toolLoopAgent', () => {
 
 	test('stream returns the result', () =>
 		Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({ model: textModel('hello') });
+			const agent = yield* ToolLoopAgent.make({ model: textModel('hello') });
 			const result = yield* agent.stream({ prompt: 'test' });
 
 			expect(yield* Effect.promise(() => Promise.resolve(result.text))).toBe(
@@ -122,7 +122,7 @@ describe('toolLoopAgent', () => {
 	test('accepts messages instead of prompt', () =>
 		Effect.gen(function* () {
 			const model = textModel('hello');
-			const agent = yield* toolLoopAgent({ model });
+			const agent = yield* ToolLoopAgent.make({ model });
 			yield* agent.generate({
 				messages: [{ role: 'user', content: 'from messages' }],
 			});
@@ -136,7 +136,7 @@ describe('toolLoopAgent', () => {
 		const seen: string[] = [];
 
 		return Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: textModel('hello'),
 				onEnd: () =>
 					Effect.gen(function* () {
@@ -164,7 +164,7 @@ describe('toolLoopAgent', () => {
 		const seen: string[] = [];
 
 		return Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: textModel('hello'),
 				onStepEnd: () => Effect.sync(() => seen.push('settings')),
 			});
@@ -183,7 +183,7 @@ describe('toolLoopAgent', () => {
 		const errors: unknown[] = [];
 
 		return Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: new MockLanguageModelV4({
 					doStream: async () => {
 						throw new Error('stream failed');
@@ -211,7 +211,7 @@ describe('toolLoopAgent', () => {
 						return 'tool-output';
 					}),
 			}).pipe(Effect.provide(Dep.layer));
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: toolLoopModel('lookup'),
 				tools: { lookup: myTool },
 			});
@@ -224,10 +224,61 @@ describe('toolLoopAgent', () => {
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 });
 
-describe('toolLoopAgent errors', () => {
+describe('ToolLoopAgent.make as a service', () => {
+	const seen: string[] = [];
+
+	class WeatherAgent extends Context.Service<WeatherAgent>()(
+		'test/WeatherAgent',
+		{
+			make: Effect.gen(function* () {
+				const lookup = yield* tool({
+					inputSchema: Schema.Struct({}),
+					execute: () =>
+						Effect.gen(function* () {
+							const callDep = yield* CallDep;
+							return callDep.value;
+						}),
+				});
+
+				return yield* ToolLoopAgent.make({
+					model: toolLoopModel('lookup'),
+					tools: { lookup },
+					onStart: () =>
+						Effect.gen(function* () {
+							const dep = yield* Dep;
+							seen.push(dep.value);
+						}),
+				});
+			}),
+		},
+	) {
+		static readonly layer = Layer.effect(WeatherAgent, WeatherAgent.make);
+	}
+
+	test('layer requires Ai, the callback services and the tool services', () => {
+		expectTypeOf<Layer.Services<typeof WeatherAgent.layer>>().toEqualTypeOf<
+			Ai | Dep | CallDep
+		>();
+	});
+
+	test('yielding the service gives a working agent', () =>
+		Effect.gen(function* () {
+			const agent = yield* WeatherAgent;
+			const result = yield* agent.generate({ prompt: 'test' });
+
+			expect(seen).toEqual(['dep']);
+			expect(result.steps[0]?.toolResults[0]?.output).toBe('call-dep');
+		}).pipe(
+			Effect.provide(WeatherAgent.layer),
+			Effect.provide(Layer.mergeAll(Ai.layer, Dep.layer, CallDep.layer)),
+			Effect.runPromise,
+		));
+});
+
+describe('ToolLoopAgent.make errors', () => {
 	test('generate surfaces SDK failures as AiError', () =>
 		Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: new MockLanguageModelV4({
 					doGenerate: async () => {
 						throw new Error('API error');
@@ -246,7 +297,7 @@ describe('toolLoopAgent errors', () => {
 
 	test('stream surfaces SDK failures as AiError', () =>
 		Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: textModel('hello'),
 				prepareCall: () => {
 					throw new Error('prepare failed');
@@ -263,7 +314,7 @@ describe('toolLoopAgent errors', () => {
 
 	test('invalid call options fail with AiError', () =>
 		Effect.gen(function* () {
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: textModel('hello'),
 				callOptionsSchema: effectSchema(
 					Schema.Struct({ userId: Schema.String }),
@@ -282,7 +333,7 @@ describe('toolLoopAgent errors', () => {
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 });
 
-describe('toolLoopAgent interruption', () => {
+describe('ToolLoopAgent.make interruption', () => {
 	const hangingTool = Effect.gen(function* () {
 		const started = yield* Deferred.make<void>();
 		const interrupted = yield* Deferred.make<void>();
@@ -301,7 +352,7 @@ describe('toolLoopAgent interruption', () => {
 		Effect.gen(function* () {
 			const toolSetup = yield* hangingTool;
 			const model = toolLoopModel('slow');
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model,
 				tools: { slow: toolSetup.slow },
 			});
@@ -322,7 +373,7 @@ describe('toolLoopAgent interruption', () => {
 	test('honours a call-level abortSignal', () =>
 		Effect.gen(function* () {
 			const toolSetup = yield* hangingTool;
-			const agent = yield* toolLoopAgent({
+			const agent = yield* ToolLoopAgent.make({
 				model: toolLoopModel('slow'),
 				tools: { slow: toolSetup.slow },
 			});
@@ -355,7 +406,7 @@ describe('toolLoopAgent interruption', () => {
 			const layerScope = yield* Scope.make();
 			const context = yield* Layer.buildWithScope(Ai.layer, layerScope);
 
-			const agent = yield* toolLoopAgent({ model }).pipe(
+			const agent = yield* ToolLoopAgent.make({ model }).pipe(
 				Effect.provideContext(context),
 			);
 			yield* agent
@@ -381,7 +432,7 @@ describe('toolLoopAgent interruption', () => {
 					return { stream: new ReadableStream() };
 				},
 			});
-			const agent = yield* toolLoopAgent({ model });
+			const agent = yield* ToolLoopAgent.make({ model });
 			const controller = new AbortController();
 
 			yield* agent.stream({ prompt: 'test', abortSignal: controller.signal });
@@ -405,7 +456,7 @@ describe('type-level regressions', () => {
 	const UserSchema = Schema.Struct({ userId: Schema.String });
 
 	test('construction requires Ai | its callbacks R, calls require Ai | their callbacks R', () => {
-		const construction = toolLoopAgent({
+		const construction = ToolLoopAgent.make({
 			model,
 			onEnd: () =>
 				Effect.gen(function* () {
@@ -416,7 +467,7 @@ describe('type-level regressions', () => {
 			Ai | Dep
 		>();
 
-		const bare = toolLoopAgent({ model });
+		const bare = ToolLoopAgent.make({ model });
 		expectTypeOf<Effect.Services<typeof bare>>().toEqualTypeOf<Ai>();
 
 		typeOnly(() => {
@@ -453,7 +504,7 @@ describe('type-level regressions', () => {
 	});
 
 	test('infers OUTPUT from `output` into the result', () => {
-		const program = toolLoopAgent({
+		const program = ToolLoopAgent.make({
 			model,
 			output: AiSdk.Output.object({ schema: effectSchema(UserSchema) }),
 		});
@@ -469,7 +520,7 @@ describe('type-level regressions', () => {
 			inputSchema: z.object({ x: z.number() }),
 			execute: async () => 'out',
 		});
-		const program = toolLoopAgent({ model, tools: { aTool } });
+		const program = ToolLoopAgent.make({ model, tools: { aTool } });
 		type Agent = Effect.Success<typeof program>;
 		expectTypeOf<Agent['tools']>().toEqualTypeOf<{ aTool: typeof aTool }>();
 		type Result = Effect.Success<ReturnType<Agent['generate']>>;
@@ -479,7 +530,7 @@ describe('type-level regressions', () => {
 	});
 
 	test('infers RUNTIME_CONTEXT from `runtimeContext` into callbacks', () => {
-		toolLoopAgent({
+		ToolLoopAgent.make({
 			model,
 			runtimeContext: { tenant: 'acme' },
 			onEnd: (event) => {
@@ -490,7 +541,7 @@ describe('type-level regressions', () => {
 	});
 
 	test('callOptionsSchema makes `options` required and typed', () => {
-		const program = toolLoopAgent({
+		const program = ToolLoopAgent.make({
 			model,
 			callOptionsSchema: effectSchema(UserSchema),
 		});
