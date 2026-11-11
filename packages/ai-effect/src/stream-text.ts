@@ -14,6 +14,14 @@ import {
 	makeStreamTextResult,
 	type StreamTextResult,
 } from '#src/internal/stream-text-result.ts';
+import {
+	composeCallbacks,
+	rebindTools,
+	streamLifecycleCallbacks,
+	TEXT_CALLBACK_ALIASES,
+	textRequestAttributes,
+	withStreamSpan,
+} from '#src/internal/tracing.ts';
 
 const STREAM_TEXT_CALLBACK_KEYS = [
 	...GENERATE_TEXT_CALLBACK_KEYS,
@@ -67,33 +75,64 @@ export function streamText<
 > {
 	return Effect.gen(function* () {
 		const ai = yield* Ai;
-		const runPromise = yield* makeRunPromise<R>();
 
-		const callController = new AbortController();
+		return yield* withStreamSpan(
+			'ai-effect.streamText',
+			{
+				kind: 'internal',
+				attributes: textRequestAttributes(params, { stream: true }),
+			},
+			(call) =>
+				Effect.gen(function* () {
+					const runPromise = yield* makeRunPromise<R>();
+					const wrapped = wrapCallbacks(
+						runPromise,
+						params,
+						STREAM_TEXT_CALLBACK_KEYS,
+					);
 
-		const raw = yield* Effect.try({
-			try: () =>
-				AiSdk.streamText({
-					...params,
-					...wrapCallbacks(runPromise, params, STREAM_TEXT_CALLBACK_KEYS),
-					abortSignal: combineAbortSignals(
+					const callController = new AbortController();
+					const abortSignal = combineAbortSignals(
 						ai.abortSignal,
 						callController.signal,
 						params.abortSignal,
-					),
-				} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
-			catch: (cause) =>
-				new AiError({
-					method: 'streamText',
-					reason: reasonFromSdkError(cause),
-				}),
-		});
+					);
+					const tools = yield* rebindTools<TOOLS>(params.tools, {
+						parent: call.span,
+					});
+					const lifecycle = streamLifecycleCallbacks(call, {
+						method: 'streamText',
+						signal: abortSignal,
+						userSignal: params.abortSignal,
+					});
 
-		return makeStreamTextResult(
-			'streamText',
-			raw,
-			callController,
-			params.tools,
+					const raw = yield* Effect.try({
+						try: () =>
+							AiSdk.streamText({
+								...params,
+								...wrapped,
+								...composeCallbacks(wrapped, lifecycle, TEXT_CALLBACK_ALIASES, {
+									// Setting `onError` replaces the SDK's default logger.
+									onError: ({ error }: { error: unknown }) =>
+										console.error(error),
+								}),
+								...(tools === undefined ? {} : { tools }),
+								abortSignal,
+							} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
+						catch: (cause) =>
+							new AiError({
+								method: 'streamText',
+								reason: reasonFromSdkError(cause),
+							}),
+					});
+
+					return makeStreamTextResult(
+						'streamText',
+						raw,
+						callController,
+						params.tools,
+					);
+				}),
 		);
 	});
 }

@@ -96,6 +96,22 @@ beforeEach(() => {
 	vi.mocked(AiSdk.streamText).mockReset();
 });
 
+/** The slice of the SDK's end event that tracing reads. */
+const completedEvent = {
+	finishReason: 'stop',
+	totalUsage: {
+		inputTokens: 1,
+		outputTokens: 2,
+		inputTokenDetails: {
+			cacheReadTokens: undefined,
+			cacheWriteTokens: undefined,
+		},
+		outputTokenDetails: { reasoningTokens: undefined },
+	},
+	finalStep: { response: { id: 'resp-1', modelId: 'model-1' } },
+	steps: [],
+};
+
 describe('streamText', () => {
 	test('wraps synchronous return', () => {
 		const mockResult = { textStream: 'mock-stream' };
@@ -135,11 +151,11 @@ describe('streamText', () => {
 	});
 
 	test('wraps onFinish callback', () => {
-		const finishEvent = { text: 'done', steps: [], totalUsage: {} };
+		const finishEvent = { ...completedEvent, text: 'done' };
 		vi.mocked(AiSdk.streamText).mockImplementation(
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			((params: any) => {
-				if (params.onFinish) params.onFinish(finishEvent);
+				if (params.onEnd) params.onEnd(finishEvent);
 				return { textStream: 'mock' };
 			}) as never,
 		);
@@ -160,7 +176,7 @@ describe('streamText', () => {
 	// v7 renamed onFinish -> onEnd; both names must be wrapped so callers on
 	// either name get Effect ergonomics (same event, one calling convention).
 	test('wraps onEnd callback (v7 rename of onFinish)', () => {
-		const endEvent = { text: 'done', steps: [], totalUsage: {} };
+		const endEvent = { ...completedEvent, text: 'done' };
 		vi.mocked(AiSdk.streamText).mockImplementation(
 			// biome-ignore lint/suspicious/noExplicitAny: test mock
 			((params: any) => {

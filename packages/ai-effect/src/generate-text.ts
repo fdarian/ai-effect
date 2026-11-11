@@ -9,6 +9,14 @@ import {
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
+import {
+	composeCallbacks,
+	rebindTools,
+	TEXT_CALLBACK_ALIASES,
+	textCallbacks,
+	textRequestAttributes,
+	withCallSpan,
+} from '#src/internal/tracing.ts';
 
 /**
  * v7 renamed several callbacks (e.g. onStepFinish -> onStepEnd, onFinish ->
@@ -96,21 +104,43 @@ export function generateText<
 	AiError,
 	Ai | R
 > {
-	return Effect.gen(function* () {
-		const runPromise = yield* makeRunPromise<R>();
+	return withCallSpan(
+		'ai-effect.generateText',
+		{
+			kind: 'internal',
+			attributes: textRequestAttributes(params, { stream: false }),
+		},
+		(call) =>
+			Effect.gen(function* () {
+				const runPromise = yield* makeRunPromise<R>();
+				const wrapped = wrapCallbacks(
+					runPromise,
+					params,
+					GENERATE_TEXT_CALLBACK_KEYS,
+				);
+				const tools = yield* rebindTools<TOOLS>(params.tools, {
+					parent: call.span,
+				});
 
-		return yield* Effect.tryPromise({
-			try: (signal) =>
-				AiSdk.generateText({
-					...params,
-					...wrapCallbacks(runPromise, params, GENERATE_TEXT_CALLBACK_KEYS),
-					abortSignal: combineAbortSignals(signal, params.abortSignal),
-				} as OriginalGenerateTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
-			catch: (cause) =>
-				new AiError({
-					method: 'generateText',
-					reason: reasonFromSdkError(cause),
-				}),
-		});
-	});
+				return yield* Effect.tryPromise({
+					try: (signal) =>
+						AiSdk.generateText({
+							...params,
+							...wrapped,
+							...composeCallbacks(
+								wrapped,
+								textCallbacks(call),
+								TEXT_CALLBACK_ALIASES,
+							),
+							...(tools === undefined ? {} : { tools }),
+							abortSignal: combineAbortSignals(signal, params.abortSignal),
+						} as OriginalGenerateTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
+					catch: (cause) =>
+						new AiError({
+							method: 'generateText',
+							reason: reasonFromSdkError(cause),
+						}),
+				});
+			}),
+	);
 }

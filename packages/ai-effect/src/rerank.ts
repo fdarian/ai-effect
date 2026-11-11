@@ -11,6 +11,13 @@ import {
 	type StartEndCallbackKeys,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
+import {
+	composeCallbacks,
+	modelIdOf,
+	rerankCallbacks,
+	START_END_CALLBACK_ALIASES,
+	withCallSpan,
+} from '#src/internal/tracing.ts';
 
 /**
  * `ai` doesn't export `JSONObject` (it lives in `@ai-sdk/provider`, which isn't
@@ -45,21 +52,39 @@ export function rerank<
 >(
 	params: EffectRerankDef<VALUE, RUNTIME_CONTEXT, R>,
 ): Effect.Effect<RerankResult<VALUE, RUNTIME_CONTEXT>, AiError, Ai | R> {
-	return Effect.gen(function* () {
-		const runPromise = yield* makeRunPromise<R>();
+	return withCallSpan(
+		`rerank ${modelIdOf(params.model)}`,
+		{
+			kind: 'client',
+			attributes: { 'gen_ai.operation.name': 'rerank' },
+		},
+		(call) =>
+			Effect.gen(function* () {
+				const runPromise = yield* makeRunPromise<R>();
+				const wrapped = wrapCallbacks(
+					runPromise,
+					params,
+					START_END_CALLBACK_KEYS,
+				);
 
-		return yield* Effect.tryPromise({
-			try: (signal) =>
-				AiSdk.rerank({
-					...params,
-					...wrapCallbacks(runPromise, params, START_END_CALLBACK_KEYS),
-					abortSignal: combineAbortSignals(signal, params.abortSignal),
-				} as OriginalRerankDef<VALUE, RUNTIME_CONTEXT>),
-			catch: (cause) =>
-				new AiError({
-					method: 'rerank',
-					reason: reasonFromSdkError(cause),
-				}),
-		});
-	});
+				return yield* Effect.tryPromise({
+					try: (signal) =>
+						AiSdk.rerank({
+							...params,
+							...wrapped,
+							...composeCallbacks(
+								wrapped,
+								rerankCallbacks(call),
+								START_END_CALLBACK_ALIASES,
+							),
+							abortSignal: combineAbortSignals(signal, params.abortSignal),
+						} as OriginalRerankDef<VALUE, RUNTIME_CONTEXT>),
+					catch: (cause) =>
+						new AiError({
+							method: 'rerank',
+							reason: reasonFromSdkError(cause),
+						}),
+				});
+			}),
+	);
 }
