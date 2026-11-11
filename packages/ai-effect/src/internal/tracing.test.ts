@@ -217,6 +217,7 @@ describe('streamLifecycleCallbacks', () => {
 	const setup = (options: {
 		signal: AbortSignal;
 		userSignal?: AbortSignal;
+		errorMayBeRetried?: boolean;
 	}) => {
 		const tracer = makeTestTracer();
 		return Effect.gen(function* () {
@@ -225,6 +226,7 @@ describe('streamLifecycleCallbacks', () => {
 				method: 'streamText',
 				signal: options.signal,
 				userSignal: options.userSignal,
+				errorMayBeRetried: options.errorMayBeRetried ?? false,
 			});
 			return { callbacks, span: spanNamed(tracer.spans, 'stream') };
 		}).pipe(Effect.provide(tracer.layer), Effect.runPromise);
@@ -285,5 +287,56 @@ describe('streamLifecycleCallbacks', () => {
 		expect(attributesOf(result.span)['error.type']).toBe(
 			'ai-effect/UnknownError',
 		);
+	});
+
+	describe('when the SDK may retry an error', () => {
+		const endEvent = (finishReason: string) => ({
+			finishReason,
+			totalUsage: {
+				inputTokens: undefined,
+				outputTokens: undefined,
+				inputTokenDetails: {
+					cacheReadTokens: undefined,
+					cacheWriteTokens: undefined,
+				},
+				outputTokenDetails: { reasoningTokens: undefined },
+			},
+			finalStep: { response: { id: 'r', modelId: 'm' } },
+		});
+		const retryable = () =>
+			setup({
+				signal: new AbortController().signal,
+				errorMayBeRetried: true,
+			});
+
+		test('onError only records the error', async () => {
+			const result = await retryable();
+			result.callbacks.onError({ error: new Error('transient') });
+			expect(result.span.status._tag).toBe('Started');
+		});
+
+		test('onEnd with an error finish reason fails with the recorded error', async () => {
+			const result = await retryable();
+			result.callbacks.onError({ error: new TypeError('first') });
+			result.callbacks.onError({ error: new Error('last') });
+			result.callbacks.onEnd(endEvent('error'));
+			expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+			expect(attributesOf(result.span)['error.type']).toBe(
+				'ai-effect/UnknownError',
+			);
+		});
+
+		test('onEnd with any other finish reason succeeds, the retry recovered', async () => {
+			const result = await retryable();
+			result.callbacks.onError({ error: new Error('transient') });
+			result.callbacks.onEnd(endEvent('stop'));
+			expect(Exit.isSuccess(endedExit(result.span))).toBe(true);
+		});
+
+		test('onStepError still ends the span as a failure', async () => {
+			const result = await retryable();
+			result.callbacks.onStepError({ error: new Error('step') });
+			expect(Exit.isFailure(endedExit(result.span))).toBe(true);
+		});
 	});
 });

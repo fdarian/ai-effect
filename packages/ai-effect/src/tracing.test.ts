@@ -754,6 +754,106 @@ describe('streamText spans', () => {
 		consoleError.mockRestore();
 	});
 
+	describe('stream retries', () => {
+		const unauthorized = () =>
+			new AiSdk.APICallError({
+				message: 'unauthorized',
+				url: 'https://example.test',
+				requestBodyValues: {},
+				statusCode: 401,
+			});
+		const failingChunks = (error: unknown) => [
+			{ type: 'stream-start' as const, warnings: [] },
+			{ type: 'error' as const, error },
+		];
+		const modelFailing = (times: number) => {
+			let calls = 0;
+			return new MockLanguageModelV4({
+				doStream: async () => {
+					calls++;
+					return {
+						stream: streamOf(
+							calls <= times ? failingChunks(unauthorized()) : textChunks('Hi'),
+						) as never,
+					};
+				},
+			});
+		};
+
+		test('a retry that recovers ends the span as a success', async () => {
+			const tracer = makeTestTracer();
+			const consoleError = vi
+				.spyOn(console, 'error')
+				.mockImplementation(() => undefined);
+			await run(
+				Effect.gen(function* () {
+					const result = yield* streamText({
+						model: modelFailing(1),
+						prompt: 'hi',
+						maxRetries: 0,
+						streamRetries: 1,
+					});
+					yield* Stream.runDrain(result.stream);
+
+					const span = spanNamed(tracer.spans, 'ai-effect.streamText');
+					yield* Effect.promise(() => settled(() => endedExit(span)));
+					expect(Exit.isSuccess(endedExit(span))).toBe(true);
+					expect(attributesOf(span)['error.type']).toBeUndefined();
+				}),
+				tracer,
+			);
+			consoleError.mockRestore();
+		});
+
+		test('exhausted retries end the span as a failure with the real error type', async () => {
+			const tracer = makeTestTracer();
+			const consoleError = vi
+				.spyOn(console, 'error')
+				.mockImplementation(() => undefined);
+			await run(
+				Effect.gen(function* () {
+					const result = yield* streamText({
+						model: modelFailing(5),
+						prompt: 'hi',
+						maxRetries: 0,
+						streamRetries: 1,
+					});
+					yield* Stream.runDrain(result.stream);
+
+					const span = spanNamed(tracer.spans, 'ai-effect.streamText');
+					yield* Effect.promise(() => settled(() => endedExit(span)));
+					expect(aiErrorOf(span).reason).toBeInstanceOf(AuthenticationError);
+					expect(attributesOf(span)['error.type']).toBe(
+						'ai-effect/AuthenticationError',
+					);
+				}),
+				tracer,
+			);
+			consoleError.mockRestore();
+		});
+
+		test('a callback-requested retry that recovers ends the span as a success', async () => {
+			const tracer = makeTestTracer();
+			await run(
+				Effect.gen(function* () {
+					const result = yield* streamText({
+						model: modelFailing(1),
+						prompt: 'hi',
+						maxRetries: 0,
+						streamRetries: 0,
+						onError: () => Effect.succeed({ retry: true }),
+					});
+					yield* Stream.runDrain(result.stream);
+
+					const span = spanNamed(tracer.spans, 'ai-effect.streamText');
+					yield* Effect.promise(() => settled(() => endedExit(span)));
+					expect(Exit.isSuccess(endedExit(span))).toBe(true);
+				}),
+				tracer,
+			);
+		});
+	});
+
 	test('does not drain the stream when the consumer stops early with Stream.take', async () => {
 		const tracer = makeTestTracer();
 		const total = 400;

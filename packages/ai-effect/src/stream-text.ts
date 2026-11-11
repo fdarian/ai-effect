@@ -57,6 +57,13 @@ type EffectStreamTextDef<
 	abortSignal?: AbortSignal;
 };
 
+/** Takes the settings untyped for the same deferred-generics reason as `textRequestAttributes`. */
+function errorMayBeRetried(settings: Readonly<Record<string, unknown>>) {
+	const streamRetries = settings.streamRetries;
+	if (typeof streamRetries !== 'number') return false;
+	return streamRetries > 0 || settings.onError !== undefined;
+}
+
 export function streamText<
 	TOOLS extends AiSdk.ToolSet = AiSdk.ToolSet,
 	RUNTIME_CONTEXT extends Record<string, unknown> = Record<string, unknown>,
@@ -104,6 +111,7 @@ export function streamText<
 						method: 'streamText',
 						signal: abortSignal,
 						userSignal: params.abortSignal,
+						errorMayBeRetried: errorMayBeRetried(params),
 					});
 
 					const raw = yield* Effect.try({

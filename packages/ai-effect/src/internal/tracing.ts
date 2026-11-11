@@ -327,6 +327,8 @@ export function streamLifecycleCallbacks(
 		readonly method: Method;
 		readonly signal: AbortSignal;
 		readonly userSignal: AbortSignal | undefined;
+		/** The SDK calls `onError` before it decides to retry, so with retries possible it isn't terminal. */
+		readonly errorMayBeRetried: boolean;
 	},
 ) {
 	const aiError = (reason: AiErrorReason) =>
@@ -355,14 +357,25 @@ export function streamLifecycleCallbacks(
 		finish(aiError(reasonFromSdkError(event.error)));
 
 	const text = textCallbacks(call);
+	let recordedError: { readonly error: unknown } | undefined;
 
 	return {
 		onStart: text.onStart,
 		onEnd: (event: TextEndEvent) => {
 			text.onEnd(event);
+			if (event.finishReason === 'error' && recordedError !== undefined) {
+				failWith(recordedError);
+				return;
+			}
 			finish(Exit.void);
 		},
-		onError: failWith,
+		onError: (event: { readonly error: unknown }) => {
+			if (options.errorMayBeRetried) {
+				recordedError = event;
+				return;
+			}
+			failWith(event);
+		},
 		onStepError: failWith,
 		onAbort: finishAborted,
 	};
