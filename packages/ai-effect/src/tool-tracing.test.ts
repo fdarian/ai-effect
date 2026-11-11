@@ -209,18 +209,33 @@ describe('tool spans', () => {
 				yield 'sunny';
 			},
 		});
-		const result = await run(
-			generateText({
-				model: toolCallModel(),
-				prompt: 'hi',
-				tools: { weather },
+		const parts = await run(
+			Effect.gen(function* () {
+				const result = yield* streamText({
+					model: streamModel(toolCallChunks('weather')),
+					prompt: 'hi',
+					tools: { weather },
+				});
+				return yield* Stream.runCollect(result.stream);
 			}),
 			tracer,
 		);
 
-		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
-		expect(Exit.isSuccess(endedExit(toolSpan))).toBe(true);
-		expect(result.toolResults.at(0)?.output).toBe('sunny');
+		const toolResults = parts.flatMap((part) =>
+			part.type === 'tool-result'
+				? [{ output: part.output, preliminary: part.preliminary }]
+				: [],
+		);
+		expect(toolResults).toEqual([
+			{ output: 'partial', preliminary: true },
+			{ output: 'sunny', preliminary: true },
+			{ output: 'sunny', preliminary: undefined },
+		]);
+		expect(
+			Exit.isSuccess(
+				endedExit(spanNamed(tracer.spans, 'execute_tool weather')),
+			),
+		).toBe(true);
 	});
 
 	test('a tool without execute passes through untouched', async () => {
@@ -304,7 +319,7 @@ describe('tool spans', () => {
 				throw boom;
 			},
 		});
-		await run(
+		const result = await run(
 			generateText({
 				model: toolCallModel(),
 				prompt: 'hi',
@@ -315,6 +330,8 @@ describe('tool spans', () => {
 
 		const toolSpan = spanNamed(tracer.spans, 'execute_tool weather');
 		expect(attributesOf(toolSpan)['error.type']).toBe('RangeError');
+		const toolError = result.content.find((part) => part.type === 'tool-error');
+		expect(toolError?.error).toBe(boom);
 	});
 
 	test('a tool still works outside any wrapper, without a span', async () => {

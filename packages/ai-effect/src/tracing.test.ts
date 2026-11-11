@@ -745,7 +745,7 @@ describe('streamText spans', () => {
 		},
 	);
 
-	test('still runs user onError and onAbort callbacks', async () => {
+	test('still runs a user onError callback', async () => {
 		const tracer = makeTestTracer();
 		const onError = vi.fn(() => Effect.void);
 		const unauthorized = new Error('boom');
@@ -764,6 +764,33 @@ describe('streamText spans', () => {
 				yield* Effect.promise(() =>
 					settled(() => expect(onError).toHaveBeenCalledTimes(1)),
 				);
+			}),
+			tracer,
+		);
+	});
+
+	test('still runs a user onAbort callback', async () => {
+		const tracer = makeTestTracer();
+		const onAbort = vi.fn(() => Effect.void);
+		const controller = new AbortController();
+		await run(
+			Effect.gen(function* () {
+				const result = yield* streamText({
+					model: hangingModel(textChunks('Hi').slice(0, 4)),
+					prompt: 'hi',
+					abortSignal: controller.signal,
+					onAbort,
+				});
+				const fiber = yield* Effect.forkChild(Stream.runDrain(result.stream));
+				yield* Effect.sleep('20 millis');
+				controller.abort();
+				yield* Fiber.await(fiber);
+
+				yield* Effect.promise(() =>
+					settled(() => expect(onAbort).toHaveBeenCalledTimes(1)),
+				);
+				const span = spanNamed(tracer.spans, 'ai-effect.streamText');
+				expect(aiErrorOf(span).reason).toBeInstanceOf(AbortedError);
 			}),
 			tracer,
 		);
