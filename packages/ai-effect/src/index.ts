@@ -10,6 +10,10 @@ export {
 	RateLimitError,
 	UnknownError,
 } from '#src/ai-error.ts';
+export {
+	createUIMessageStream,
+	type UIMessageStreamWriter,
+} from '#src/create-ui-message-stream.ts';
 export { embed } from '#src/embed.ts';
 export { embedMany } from '#src/embed-many.ts';
 export { generateText } from '#src/generate-text.ts';
