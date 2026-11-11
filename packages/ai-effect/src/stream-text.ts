@@ -89,6 +89,11 @@ export function streamText<
 				}),
 		});
 
-		return makeStreamTextResult('streamText', raw, callController);
+		return makeStreamTextResult(
+			'streamText',
+			raw,
+			callController,
+			params.tools,
+		);
 	});
 }

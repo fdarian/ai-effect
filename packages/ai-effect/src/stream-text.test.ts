@@ -1,6 +1,7 @@
 import * as AiSdk from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
 import {
+	Context,
 	Deferred,
 	Effect,
 	Exit,
@@ -516,4 +517,92 @@ describe('type-level regressions', () => {
 			Effect.Effect<string, AiError>
 		>();
 	});
+});
+
+describe('streamText toUIMessageStream', () => {
+	test('emits UI message chunks', () =>
+		Effect.gen(function* () {
+			useRealSdk();
+			const result = yield* streamText({
+				model: modelFromChunks(textChunks('Hi')),
+				prompt: 'hi',
+			});
+
+			const chunks = yield* Stream.runCollect(result.toUIMessageStream());
+			expect(chunks.map((chunk) => chunk.type)).toEqual([
+				'start',
+				'start-step',
+				'text-start',
+				'text-delta',
+				'text-end',
+				'finish-step',
+				'finish',
+			]);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('runs an Effect onEnd with the call-site services', () => {
+		class CallDep extends Context.Service<CallDep, { value: string }>()(
+			'CallDep',
+		) {}
+		return Effect.gen(function* () {
+			useRealSdk();
+			const seen = yield* Deferred.make<string>();
+			const result = yield* streamText({
+				model: modelFromChunks(textChunks('Hi')),
+				prompt: 'hi',
+			});
+
+			yield* Stream.runDrain(
+				result.toUIMessageStream({
+					onEnd: () =>
+						Effect.gen(function* () {
+							const dep = yield* CallDep;
+							yield* Deferred.succeed(seen, dep.value);
+						}),
+				}),
+			);
+
+			expect(yield* Deferred.await(seen)).toBe('from-call-site');
+		}).pipe(
+			Effect.provideService(CallDep, { value: 'from-call-site' }),
+			Effect.provide(Ai.layer),
+			Effect.runPromise,
+		);
+	});
+
+	test('can be run twice', () =>
+		Effect.gen(function* () {
+			useRealSdk();
+			const result = yield* streamText({
+				model: modelFromChunks(textChunks('Hi')),
+				prompt: 'hi',
+			});
+			const view = result.toUIMessageStream();
+
+			const first = yield* Stream.runCollect(view);
+			const second = yield* Stream.runCollect(view);
+			expect(first.length).toBeGreaterThan(0);
+			expect(second).toEqual(first);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('interrupting the consumer aborts the call', () =>
+		Effect.gen(function* () {
+			useRealSdk();
+			const result = yield* streamText({
+				model: hangingModel(textChunks('Hi').slice(0, 3)),
+				prompt: 'hi',
+			});
+			const gotChunk = yield* Deferred.make<void>();
+
+			const fiber = yield* Stream.runDrain(
+				result
+					.toUIMessageStream()
+					.pipe(Stream.tap(() => Deferred.succeed(gotChunk, undefined))),
+			).pipe(Effect.forkChild);
+			yield* Deferred.await(gotChunk);
+			expect(sdkSignal().aborted).toBe(false);
+
+			yield* Fiber.interrupt(fiber);
+			expect(sdkSignal().aborted).toBe(true);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 });

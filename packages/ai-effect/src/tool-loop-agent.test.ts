@@ -129,6 +129,16 @@ describe('ToolLoopAgent.make', () => {
 			expect(yield* Stream.runCollect(result.textStream)).toEqual(['hello']);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
+	test('stream toUIMessageStream emits UI message chunks', () =>
+		Effect.gen(function* () {
+			const agent = yield* ToolLoopAgent.make({ model: textModel('hello') });
+			const result = yield* agent.stream({ prompt: 'test' });
+
+			const chunks = yield* Stream.runCollect(result.toUIMessageStream());
+			expect(chunks.map((chunk) => chunk.type)).toContain('text-delta');
+			expect(chunks.at(-1)?.type).toBe('finish');
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
 	test('accepts messages instead of prompt', () =>
 		Effect.gen(function* () {
 			const model = textModel('hello');

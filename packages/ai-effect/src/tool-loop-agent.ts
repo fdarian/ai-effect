@@ -246,6 +246,7 @@ function make<
 						'ToolLoopAgent.stream',
 						raw,
 						callController,
+						agent.tools,
 					);
 				}),
 		};

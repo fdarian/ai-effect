@@ -1,7 +1,13 @@
-import type * as AiSdk from 'ai';
+import * as AiSdk from 'ai';
 import { Effect, Exit, Stream } from 'effect';
+import type { Ai } from '#src/ai.ts';
 import { AbortedError, AiError, type AiErrorReason } from '#src/ai-error.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
+import {
+	type EffectifyCallbacks,
+	makeRunPromise,
+	wrapCallbacks,
+} from '#src/internal/callbacks.ts';
 
 type RawStreamTextResult<
 	TOOLS extends AiSdk.ToolSet,
@@ -30,6 +36,15 @@ const STREAM_TEXT_EFFECT_KEYS = [
 	'output',
 ] as const;
 type StreamTextEffectKey = (typeof STREAM_TEXT_EFFECT_KEYS)[number];
+
+const UI_MESSAGE_STREAM_CALLBACK_KEYS = [
+	'onStepEnd',
+	'onStepFinish',
+	'onEnd',
+	'onFinish',
+] as const;
+type UIMessageStreamCallbackKeys =
+	(typeof UI_MESSAGE_STREAM_CALLBACK_KEYS)[number];
 
 type ElementOf<S> = S extends AiSdk.AsyncIterableStream<infer T> ? T : never;
 
@@ -76,6 +91,21 @@ export interface StreamTextResult<
 		>,
 		AiError
 	>;
+	/**
+	 * Converts the stream to UI message chunks. `messageMetadata` and `onError`
+	 * stay synchronous; the step and end callbacks are Effects that run with the
+	 * call site's services.
+	 */
+	toUIMessageStream<
+		UI_MESSAGE extends AiSdk.UIMessage = AiSdk.UIMessage,
+		R = never,
+	>(
+		options?: EffectifyCallbacks<
+			AiSdk.UIMessageStreamOptions<UI_MESSAGE>,
+			UIMessageStreamCallbackKeys,
+			R
+		>,
+	): Stream.Stream<AiSdk.InferUIMessageChunk<UI_MESSAGE>, AiError, Ai | R>;
 }
 
 type Method = Extract<AiError['method'], 'streamText' | 'ToolLoopAgent.stream'>;
@@ -103,6 +133,7 @@ export function makeStreamTextResult<
 	method: Method,
 	raw: RawStreamTextResult<TOOLS, RUNTIME_CONTEXT, OUTPUT>,
 	controller: AbortController,
+	tools: TOOLS | undefined,
 ): StreamTextResult<TOOLS, RUNTIME_CONTEXT, OUTPUT> {
 	const toAiError = (reason: AiErrorReason) => new AiError({ method, reason });
 	const failed = (cause: unknown) => toAiError(reasonFromSdkError(cause));
@@ -110,7 +141,7 @@ export function makeStreamTextResult<
 
 	// `Stream.take` and friends close the upstream with a success Exit, so only
 	// a real interruption reaches the abort.
-	const abortOnInterrupt = <A>(stream: Stream.Stream<A, AiError>) =>
+	const abortOnInterrupt = <A, R>(stream: Stream.Stream<A, AiError, R>) =>
 		Stream.onExit(stream, (exit) =>
 			Exit.hasInterrupts(exit) ? abort : Effect.void,
 		);
@@ -143,6 +174,42 @@ export function makeStreamTextResult<
 			),
 		);
 
+	const toUIMessageStream = <
+		UI_MESSAGE extends AiSdk.UIMessage = AiSdk.UIMessage,
+		R = never,
+	>(
+		options?: EffectifyCallbacks<
+			AiSdk.UIMessageStreamOptions<UI_MESSAGE>,
+			UIMessageStreamCallbackKeys,
+			R
+		>,
+	): Stream.Stream<AiSdk.InferUIMessageChunk<UI_MESSAGE>, AiError, Ai | R> =>
+		Stream.unwrap(
+			Effect.gen(function* () {
+				const runPromise = yield* makeRunPromise<R>();
+				const uiStream = yield* Effect.try({
+					try: () =>
+						AiSdk.toUIMessageStream<TOOLS, UI_MESSAGE>({
+							...options,
+							...wrapCallbacks(
+								runPromise,
+								options ?? {},
+								UI_MESSAGE_STREAM_CALLBACK_KEYS,
+							),
+							stream: raw.stream,
+							tools,
+						} as Parameters<
+							typeof AiSdk.toUIMessageStream<TOOLS, UI_MESSAGE>
+						>[0]),
+					catch: failed,
+				});
+				return Stream.fromReadableStream({
+					evaluate: () => uiStream,
+					onError: failed,
+				});
+			}),
+		).pipe(abortOnInterrupt);
+
 	const effects: Record<string, Effect.Effect<unknown, AiError>> = {};
 	for (const key of STREAM_TEXT_EFFECT_KEYS) {
 		effects[key] = Effect.tryPromise({
@@ -159,5 +226,6 @@ export function makeStreamTextResult<
 		textStream: view(() => raw.textStream),
 		partialOutputStream: view(() => raw.partialOutputStream),
 		elementStream: view(() => raw.elementStream),
+		toUIMessageStream,
 	} as StreamTextResult<TOOLS, RUNTIME_CONTEXT, OUTPUT>;
 }
