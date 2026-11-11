@@ -1,7 +1,8 @@
 import * as AiSdk from 'ai';
-import { Effect, Exit, Stream } from 'effect';
+import { Effect, Stream } from 'effect';
 import type { Ai } from '#src/ai.ts';
 import { AbortedError, AiError, type AiErrorReason } from '#src/ai-error.ts';
+import { abortOnInterrupt } from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
@@ -139,15 +140,10 @@ export function makeStreamTextResult<
 	const failed = (cause: unknown) => toAiError(reasonFromSdkError(cause));
 	const abort = Effect.sync(() => controller.abort());
 
-	// `Stream.take` and friends close the upstream with a success Exit, so only
-	// a real interruption reaches the abort.
-	const abortOnInterrupt = <A, R>(stream: Stream.Stream<A, AiError, R>) =>
-		Stream.onExit(stream, (exit) =>
-			Exit.hasInterrupts(exit) ? abort : Effect.void,
-		);
+	const abortStream = abortOnInterrupt(controller);
 
 	const partStream = () =>
-		abortOnInterrupt(streamFromGetter(() => raw.stream, failed));
+		abortStream(streamFromGetter(() => raw.stream, failed));
 
 	// textStream, partialOutputStream and elementStream silently drop these
 	// parts, so a second pass over a fresh tee surfaces them as failures.
@@ -168,7 +164,7 @@ export function makeStreamTextResult<
 	);
 
 	const view = <A>(getter: () => AsyncIterable<A>) =>
-		abortOnInterrupt(
+		abortStream(
 			streamFromGetter(getter, failed).pipe(
 				Stream.concat(failOnErrorOrAbortPart),
 			),
@@ -208,7 +204,7 @@ export function makeStreamTextResult<
 					onError: failed,
 				});
 			}),
-		).pipe(abortOnInterrupt);
+		).pipe(abortStream);
 
 	const effects: Record<string, Effect.Effect<unknown, AiError>> = {};
 	for (const key of STREAM_TEXT_EFFECT_KEYS) {

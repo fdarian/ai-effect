@@ -1,8 +1,11 @@
 import * as AiSdk from 'ai';
-import { Effect, Exit, Stream } from 'effect';
+import { Effect, Stream } from 'effect';
 import { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
-import { combineAbortSignals } from '#src/internal/abort-signal.ts';
+import {
+	abortOnInterrupt,
+	combineAbortSignals,
+} from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
@@ -129,18 +132,10 @@ export function createUIMessageStream<
 				catch: failed,
 			});
 
-			// Stream combinators like `Stream.take` close with a success Exit, so
-			// only a real interruption aborts the run.
 			return Stream.fromReadableStream({
 				evaluate: () => uiStream,
 				onError: failed,
-			}).pipe(
-				Stream.onExit((exit) =>
-					Exit.hasInterrupts(exit)
-						? Effect.sync(() => controller.abort())
-						: Effect.void,
-				),
-			);
+			}).pipe(abortOnInterrupt(controller));
 		}),
 	);
 }
