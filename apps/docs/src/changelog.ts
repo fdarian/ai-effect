@@ -11,6 +11,7 @@ export type ChangelogSection = {
 export type ChangelogRelease = {
 	version: string;
 	date: string;
+	summary?: string;
 	sections: ChangelogSection[];
 };
 
@@ -24,6 +25,9 @@ const sectionLabels: Record<string, string> = {
 	'Major Changes': 'Breaking',
 	'Minor Changes': 'Added',
 	'Patch Changes': 'Fixed',
+	'Breaking changes': 'Breaking',
+	'New features': 'Added',
+	Fixes: 'Fixed',
 };
 
 function releaseDate(version: string) {
@@ -44,7 +48,11 @@ function releaseDate(version: string) {
 }
 
 function renderItem(lines: string[]) {
-	const text = lines
+	const trimmed = [...lines];
+	while (trimmed[trimmed.length - 1]?.trim() === '') {
+		trimmed.pop();
+	}
+	const text = trimmed
 		.map((line) => line.replace(/^ {2}/, ''))
 		.join('\n')
 		.replace(/^[0-9a-f]{7,}: /, '');
@@ -53,6 +61,7 @@ function renderItem(lines: string[]) {
 
 type RawRelease = {
 	version: string;
+	intro: string[];
 	sections: { label: string; items: string[][] }[];
 };
 
@@ -63,7 +72,7 @@ function parseChangelog(markdown: string) {
 
 	for (const line of markdown.split('\n')) {
 		if (line.startsWith('## ')) {
-			release = { version: line.slice(3).trim(), sections: [] };
+			release = { version: line.slice(3).trim(), intro: [], sections: [] };
 			releases.push(release);
 			items = undefined;
 		} else if (line.startsWith('### ')) {
@@ -80,13 +89,18 @@ function parseChangelog(markdown: string) {
 		} else if (items !== undefined) {
 			if (line.startsWith('- ')) {
 				items.push([line.slice(2)]);
-			} else if (line.trim() !== '') {
+			} else {
 				const current = items[items.length - 1];
 				if (current === undefined) {
-					throw new Error(`Unexpected changelog line "${line}"`);
+					if (line.trim() !== '') {
+						throw new Error(`Unexpected changelog line "${line}"`);
+					}
+				} else {
+					current.push(line);
 				}
-				current.push(line);
 			}
+		} else if (release !== undefined && line.trim() !== '') {
+			release.intro.push(line);
 		}
 	}
 	return releases;
@@ -96,6 +110,9 @@ export function getChangelog(): ChangelogRelease[] {
 	return parseChangelog(readFileSync(changelogPath, 'utf8')).map((release) => ({
 		version: release.version,
 		date: releaseDate(release.version),
+		...(release.intro.length > 0 && {
+			summary: marked.parse(release.intro.join('\n'), { async: false }),
+		}),
 		sections: release.sections.map((section) => ({
 			label: section.label,
 			items: section.items.map(renderItem),

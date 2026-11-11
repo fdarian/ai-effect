@@ -16,6 +16,9 @@ const releases = getChangelog();
 							{release.date}
 						</time>
 					</h2>
+					{release.summary !== undefined && (
+						<div class="changelog-summary" set:html={release.summary} />
+					)}
 					{release.sections.map((section) => (
 						<>
 							<h3 class="changelog-label">{section.label}</h3>
@@ -54,6 +57,15 @@ const releases = getChangelog();
 
 	.changelog :global(li > p) {
 		margin: 0;
+	}
+
+	.changelog :global(li > * + *) {
+		margin-top: 0.5rem;
+	}
+
+	.changelog :global(li > ul),
+	.changelog :global(li > ol) {
+		margin-bottom: 0;
 	}
 
 	.changelog :global(hr) {
