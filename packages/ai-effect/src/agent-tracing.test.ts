@@ -214,6 +214,26 @@ describe('ToolLoopAgent.generate spans', () => {
 		).toMatchObject({ 'gen_ai.request.model': 'gpt-test' });
 	});
 
+	test('settings-level callbacks run under the agent span, not the span `make` ran in', async () => {
+		const tracer = makeTestTracer();
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: generateModel(),
+					onStart: () => Effect.void.pipe(Effect.withSpan('settings-callback')),
+				}).pipe(Effect.withSpan('construction'));
+				yield* agent.generate({ prompt: 'hi' });
+			}),
+			tracer,
+		);
+
+		await settled(() => spanNamed(tracer.spans, 'settings-callback'));
+		expect(parentSpanId(spanNamed(tracer.spans, 'settings-callback'))).toBe(
+			spanNamed(tracer.spans, 'invoke_agent a').spanId,
+		);
+	});
+
 	test('raw produces no spans', async () => {
 		const tracer = makeTestTracer();
 		await run(
@@ -594,6 +614,27 @@ describe('ToolLoopAgent.stream spans', () => {
 		const span = spanNamed(tracer.spans, 'invoke_agent a');
 		await settled(() => endedExit(span));
 		expect(attributesOf(span)['gen_ai.request.model']).toBe('mock-model-id');
+	});
+
+	test('settings-level callbacks run under the agent span, not the span `make` ran in', async () => {
+		const tracer = makeTestTracer();
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: streamModel(textChunks('Hi')),
+					onStart: () => Effect.void.pipe(Effect.withSpan('settings-callback')),
+				}).pipe(Effect.withSpan('construction'));
+				const result = yield* agent.stream({ prompt: 'hi' });
+				yield* Stream.runDrain(result.stream);
+			}),
+			tracer,
+		);
+
+		await settled(() => spanNamed(tracer.spans, 'settings-callback'));
+		expect(parentSpanId(spanNamed(tracer.spans, 'settings-callback'))).toBe(
+			spanNamed(tracer.spans, 'invoke_agent a').spanId,
+		);
 	});
 
 	test('raw produces no spans', async () => {

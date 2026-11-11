@@ -227,6 +227,14 @@ function make<
 		const buildSdkAgent = (tracing: AgentCallTracing) =>
 			Effect.gen(function* () {
 				const services = yield* Effect.context<never>();
+				// `runPromise` carries `make`'s parent span, so each settings callback
+				// is re-parented under this call's span.
+				const callWrapped = wrapCallbacks(
+					(effect: Effect.Effect<unknown, never, R>) =>
+						runPromise(effect.pipe(Effect.withParentSpan(tracing.call.span))),
+					settings,
+					SETTINGS_CALLBACK_KEYS,
+				);
 				const rebind = (tools: TOOLS | undefined) =>
 					Effect.runSyncWith(services)(
 						rebindTools<TOOLS>(tools, {
@@ -246,9 +254,9 @@ function make<
 
 				return new AiSdk.ToolLoopAgent({
 					...settings,
-					...wrapped,
+					...callWrapped,
 					...composeCallbacks(
-						wrapped,
+						callWrapped,
 						tracing.callbacks,
 						TEXT_CALLBACK_ALIASES,
 						{
