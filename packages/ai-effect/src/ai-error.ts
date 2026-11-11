@@ -77,7 +77,8 @@ export class AiError extends Data.TaggedError('ai-effect/AiError')<{
 		| 'rerank'
 		| 'ToolLoopAgent.generate'
 		| 'ToolLoopAgent.stream'
-		| 'createUIMessageStream';
+		| 'createUIMessageStream'
+		| 'createAgentUIStream';
 	reason: AiErrorReason;
 }> {
 	override get message() {

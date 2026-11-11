@@ -10,6 +10,7 @@ export {
 	RateLimitError,
 	UnknownError,
 } from '#src/ai-error.ts';
+export { createAgentUIStream } from '#src/create-agent-ui-stream.ts';
 export {
 	createUIMessageStream,
 	type UIMessageStreamWriter,
