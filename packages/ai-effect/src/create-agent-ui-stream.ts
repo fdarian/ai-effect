@@ -163,7 +163,7 @@ export function createAgentUIStream<
 					const lifecycle = streamLifecycleCallbacks(call, {
 						method: 'createAgentUIStream',
 						signal: abortSignal,
-						userSignal: params.abortSignal,
+						interruptSignals: [ai.abortSignal, callController.signal],
 					});
 					const agent = yield* hooks.buildSdkAgent({
 						call,

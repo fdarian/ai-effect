@@ -370,7 +370,7 @@ function make<
 								const lifecycle = streamLifecycleCallbacks(call, {
 									method: 'ToolLoopAgent.stream',
 									signal: abortSignal,
-									userSignal: params.abortSignal,
+									interruptSignals: [ai.abortSignal, callController.signal],
 								});
 								const sdkAgent = yield* buildSdkAgent({
 									call,

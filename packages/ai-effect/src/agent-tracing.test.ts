@@ -465,6 +465,26 @@ describe('ToolLoopAgent.stream spans', () => {
 		);
 	});
 
+	test('an SDK timeout fails the span with an AbortedError, not an interrupt', async () => {
+		const tracer = makeTestTracer();
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: hangingModel(partialChunks),
+				});
+				const result = yield* agent.stream({ prompt: 'hi', timeout: 30 });
+				yield* Effect.exit(Stream.runDrain(result.stream));
+
+				const span = spanNamed(tracer.spans, 'invoke_agent a');
+				yield* Effect.promise(() => settled(() => endedExit(span)));
+				expect(Exit.hasInterrupts(endedExit(span))).toBe(false);
+				expect(aiErrorOf(span).reason).toBeInstanceOf(AbortedError);
+			}),
+			tracer,
+		);
+	});
+
 	test('an already-aborted user signal fails the span with an AbortedError', async () => {
 		const tracer = makeTestTracer();
 		const controller = new AbortController();

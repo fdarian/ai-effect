@@ -216,7 +216,7 @@ describe('composeCallbacks', () => {
 describe('streamLifecycleCallbacks', () => {
 	const setup = (options: {
 		signal: AbortSignal;
-		userSignal?: AbortSignal;
+		interruptSignals?: ReadonlyArray<AbortSignal>;
 	}) => {
 		const tracer = makeTestTracer();
 		return Effect.gen(function* () {
@@ -224,32 +224,52 @@ describe('streamLifecycleCallbacks', () => {
 			const lifecycle = streamLifecycleCallbacks(call, {
 				method: 'streamText',
 				signal: options.signal,
-				userSignal: options.userSignal,
+				interruptSignals: options.interruptSignals ?? [],
 			});
 			return { ...lifecycle, span: spanNamed(tracer.spans, 'stream') };
 		}).pipe(Effect.provide(tracer.layer), Effect.runPromise);
 	};
 
+	const open = () => setup({ signal: new AbortController().signal });
+
 	test('a user abort fails with an AbortedError reason', async () => {
 		const user = new AbortController();
 		const combined = AbortSignal.any([user.signal]);
-		const result = await setup({ signal: combined, userSignal: user.signal });
+		const result = await setup({ signal: combined });
 
-		user.abort(new Error('stop'));
+		const reason = new Error('stop');
+		user.abort(reason);
 
 		const error = Option.getOrUndefined(
 			Exit.findErrorOption(endedExit(result.span)),
 		);
 		expect(error).toBeInstanceOf(AiError);
 		expect((error as AiError).reason).toBeInstanceOf(AbortedError);
+		expect((error as AiError).reason.cause).toBe(reason);
 		expect(attributesOf(result.span)['error.type']).toBe(
 			'ai-effect/AbortedError',
 		);
 	});
 
-	test('any other abort is an interrupt', async () => {
+	test('onAbort without an interrupt signal fails with the reason it saw', async () => {
+		const result = await open();
+		const reason = new DOMException('timed out', 'TimeoutError');
+		result.callbacks.onAbort({ reason });
+		const error = Option.getOrUndefined(
+			Exit.findErrorOption(endedExit(result.span)),
+		);
+		expect((error as AiError).reason).toBeInstanceOf(AbortedError);
+		expect((error as AiError).reason.cause).toBe(reason);
+	});
+
+	test('an abort of an interrupt signal is an interrupt', async () => {
 		const controller = new AbortController();
-		const result = await setup({ signal: controller.signal });
+		const result = await setup({
+			signal: controller.signal,
+			interruptSignals: [controller.signal],
+		});
+
+		controller.abort();
 
 		controller.abort();
 
@@ -261,7 +281,10 @@ describe('streamLifecycleCallbacks', () => {
 	test('an already-aborted signal ends the span at setup', async () => {
 		const controller = new AbortController();
 		controller.abort();
-		const result = await setup({ signal: controller.signal });
+		const result = await setup({
+			signal: controller.signal,
+			interruptSignals: [controller.signal],
+		});
 		expect(Exit.hasInterrupts(endedExit(result.span))).toBe(true);
 	});
 
@@ -278,7 +301,6 @@ describe('streamLifecycleCallbacks', () => {
 		},
 		finalStep: { response: { id: 'r', modelId: 'm' } },
 	});
-	const open = () => setup({ signal: new AbortController().signal });
 
 	test('onError only records the error, the span stays open', async () => {
 		const result = await open();

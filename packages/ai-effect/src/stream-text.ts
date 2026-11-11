@@ -122,7 +122,7 @@ export function streamText<
 					const lifecycle = streamLifecycleCallbacks(call, {
 						method: 'streamText',
 						signal: abortSignal,
-						userSignal: params.abortSignal,
+						interruptSignals: [ai.abortSignal, callController.signal],
 					});
 
 					const raw = yield* Effect.try({

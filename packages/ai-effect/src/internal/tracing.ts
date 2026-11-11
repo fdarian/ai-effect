@@ -342,31 +342,37 @@ export function streamLifecycleCallbacks(
 	call: CallSpan,
 	options: {
 		readonly method: Method;
+		/** Combined signal of everything that can abort the call. */
 		readonly signal: AbortSignal;
-		readonly userSignal: AbortSignal | undefined;
+		/** Aborts from these are interrupts; any other abort (user signal, SDK timeout) is the call's failure. */
+		readonly interruptSignals: ReadonlyArray<AbortSignal>;
 	},
 ) {
 	const aiError = (reason: AiErrorReason) =>
 		Exit.fail(new AiError({ method: options.method, reason }));
 
 	const finish = (exit: Exit.Exit<unknown, unknown>) => {
-		options.signal.removeEventListener('abort', finishAborted);
+		options.signal.removeEventListener('abort', finishAbortedBySignal);
 		call.finish(exit);
 	};
 
-	function finishAborted() {
-		const userSignal = options.userSignal;
+	/** The SDK's own timeouts never reach `options.signal`, so `onAbort` passes the reason it saw. */
+	function finishAborted(reason: unknown) {
 		finish(
-			userSignal?.aborted
-				? aiError(
-						new AbortedError({ message: 'aborted', cause: userSignal.reason }),
-					)
-				: Exit.interrupt(),
+			options.interruptSignals.some((signal) => signal.aborted)
+				? Exit.interrupt()
+				: aiError(new AbortedError({ message: 'aborted', cause: reason })),
 		);
 	}
 
-	options.signal.addEventListener('abort', finishAborted, { once: true });
-	if (options.signal.aborted) finishAborted();
+	function finishAbortedBySignal() {
+		finishAborted(options.signal.reason);
+	}
+
+	options.signal.addEventListener('abort', finishAbortedBySignal, {
+		once: true,
+	});
+	if (options.signal.aborted) finishAbortedBySignal();
 
 	const failWith = (error: unknown) =>
 		finish(aiError(reasonFromSdkError(error)));
@@ -388,7 +394,8 @@ export function streamLifecycleCallbacks(
 			pendingError = event;
 		},
 		onStepError: (event: { readonly error: unknown }) => failWith(event.error),
-		onAbort: finishAborted,
+		onAbort: (event: { readonly reason?: unknown }) =>
+			finishAborted(event.reason),
 	};
 
 	const streamEnd: StreamEnd = {

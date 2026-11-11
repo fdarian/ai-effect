@@ -303,6 +303,29 @@ describe('streamText spans', () => {
 		);
 	});
 
+	test('an SDK timeout fails the span with an AbortedError, not an interrupt', async () => {
+		const tracer = makeTestTracer();
+		await run(
+			Effect.gen(function* () {
+				const result = yield* streamText({
+					model: hangingModel(textChunks('Hi').slice(0, 4)),
+					prompt: 'hi',
+					timeout: 30,
+				});
+				yield* Effect.exit(Stream.runDrain(result.stream));
+
+				const span = spanNamed(tracer.spans, 'ai-effect.streamText');
+				yield* Effect.promise(() => settled(() => endedExit(span)));
+				expect(Exit.hasInterrupts(endedExit(span))).toBe(false);
+				const error = aiErrorOf(span);
+				expect(error.reason).toBeInstanceOf(AbortedError);
+				expect(error.reason.cause).toBeInstanceOf(DOMException);
+				expect(attributesOf(span)['error.type']).toBe('ai-effect/AbortedError');
+			}),
+			tracer,
+		);
+	});
+
 	test('an already-aborted user signal fails the span with an AbortedError', async () => {
 		const tracer = makeTestTracer();
 		const controller = new AbortController();
