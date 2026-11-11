@@ -1,8 +1,8 @@
 import * as AiSdk from 'ai';
-import { Context, Effect, Fiber, Schema } from 'effect';
+import { Context, Duration, Effect, Fiber, Schema } from 'effect';
 import { describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AiError } from '#src/ai-error.ts';
+import { AiError, UnknownError } from '#src/ai-error.ts';
 import { generateText } from '#src/generate-text.ts';
 import { effectSchema } from '#src/schema.ts';
 import { streamText } from '#src/stream-text.ts';
@@ -44,9 +44,41 @@ describe('generateText', () => {
 			}).pipe(Effect.flip);
 
 			expect(result).toBeInstanceOf(AiError);
-			expect(result.message).toBe('generateText failed');
-			expect(result.cause).toBeInstanceOf(Error);
-			expect((result.cause as Error).message).toBe('API error');
+			expect(result.method).toBe('generateText');
+			expect(result.message).toBe('generateText: API error');
+			expect(result.reason).toBeInstanceOf(UnknownError);
+			expect(result.reason.cause).toBeInstanceOf(Error);
+			expect((result.reason.cause as Error).message).toBe('API error');
+			expect(result.isRetryable).toBe(false);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('lets callers catch a reason with Effect.catchReason', () =>
+		Effect.gen(function* () {
+			vi.mocked(AiSdk.generateText).mockRejectedValue(
+				new AiSdk.APICallError({
+					message: 'slow down',
+					url: 'https://example.com',
+					requestBodyValues: {},
+					statusCode: 429,
+					responseHeaders: { 'retry-after': '5' },
+				}),
+			);
+
+			const retryAfter = yield* generateText({
+				model: {} as AiSdk.LanguageModel,
+				prompt: 'test',
+			}).pipe(
+				Effect.catchReason(
+					'ai-effect/AiError',
+					'ai-effect/RateLimitError',
+					(reason) =>
+						Effect.succeed(
+							Duration.toMillis(reason.retryAfter as Duration.Duration),
+						),
+				),
+			);
+
+			expect(retryAfter).toBe(5000);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
 	test('wraps onStepFinish callback', () => {

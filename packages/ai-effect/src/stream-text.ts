@@ -3,6 +3,7 @@ import { Effect } from 'effect';
 import { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
 import { GENERATE_TEXT_CALLBACK_KEYS } from '#src/generate-text.ts';
+import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
 	makeRunPromise,
@@ -80,7 +81,10 @@ export function streamText<
 			} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>);
 		} catch (cause) {
 			return yield* Effect.fail(
-				new AiError({ message: 'streamText failed', cause }),
+				new AiError({
+					method: 'streamText',
+					reason: reasonFromSdkError(cause),
+				}),
 			);
 		}
 	});
