@@ -10,7 +10,7 @@ ESM TypeScript built with tsdown, Effect v4 and `ai` as peer dependencies (pinne
 
 ## Architecture
 
-The design rule: every exported function requires `Ai`, never `Scope`. `Ai` owns a `FiberSet` and an `AbortSignal` created in `Ai.layer`; callbacks and tool functions are forked into the set with the call-site's context, so they outlive the call and are interrupted only when the layer closes. The exception is tool `execute`: it also gets the SDK's per-call `options.abortSignal` and is interrupted when that aborts (the call is interrupted, the user's `abortSignal` fires, or the tool times out). The layer's finalizer also aborts the signal, which `streamText` passes to the SDK so the stream stops too (`generateText` is already aborted by fiber interruption). Don't reintroduce a per-call `FiberSet` or `Effect.scoped`.
+The design rule: every exported function requires `Ai`, never `Scope`. `Ai` owns a `FiberSet` and an `AbortSignal` created in `Ai.layer`; callbacks and tool functions are forked into the set with the call-site's context, so they outlive the call and are interrupted only when the layer closes. The exception is tool `execute`: it also gets the SDK's per-call `options.abortSignal` and is interrupted when that aborts (the call is interrupted, the user's `abortSignal` fires, or the tool times out). The layer's finalizer also aborts the signal, which `streamText` passes to the SDK so the stream stops too (`generateText` is already aborted by fiber interruption). `streamText` returns an Effect-typed result (`internal/stream-text-result.ts`, SDK result under `raw`) and also gives the SDK a per-call `AbortController` signal: interrupting a fiber that consumes any wrapped stream or effect aborts it, while normal completion, failure and early stops like `Stream.take` (a success Exit upstream) do not. Don't reintroduce a per-call `FiberSet`, `Effect.scoped`, or a `Scope` in public signatures.
 
 One file per wrapped SDK function, each with its `.test.ts` beside it:
 
@@ -22,6 +22,7 @@ One file per wrapped SDK function, each with its `.test.ts` beside it:
 - `schema.ts` — `effectSchema`, Effect `Schema` to AI SDK schema
 - `internal/ai-error-from-sdk.ts` — `reasonFromSdkError`, the one place SDK errors are classified into a reason (unwraps `RetryError` first); new SDK error classes get mapped here
 - `internal/callbacks.ts` — Effect-to-Promise callback bridging shared by the wrappers
+- `internal/stream-text-result.ts` — wraps the SDK `StreamTextResult` into Effect streams/effects; reusable for other streaming entry points
 - `index.ts` — the public API; export new wrappers here
 
 When the AI SDK ships a new major, bump `ai` and the `peerDependencies` range together, and add a `major` changeset.

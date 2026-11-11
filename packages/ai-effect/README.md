@@ -57,7 +57,7 @@ const summary = generateText({
 
 ## `streamText`
 
-`streamText` returns the AI SDK's stream result right away. You don't need `Effect.scoped`:
+`streamText` returns right away with an Effect-typed view of the AI SDK's stream result: `stream`, `textStream` and the other streams are `Stream<_, AiError>`, and `text`, `usage`, `output` and the other promise fields are `Effect<_, AiError>`. You don't need `Effect.scoped`:
 
 ```ts
 import { streamText } from 'ai-effect';
@@ -71,11 +71,11 @@ const chat = (prompt: string) =>
 			onEnd: (event) =>
 				Effect.log(`Streamed ${event.usage.totalTokens} tokens`),
 		});
-		return result.toTextStreamResponse();
+		return result.raw.toTextStreamResponse();
 	});
 ```
 
-The callbacks run in the `Ai` layer, not in the effect that called `streamText`. An HTTP handler can return the response while the stream keeps going and `onEnd` still fires. When the `Ai` layer closes (e.g. at app shutdown), the stream is aborted and callbacks and tool executions still running are interrupted. An `abortSignal` you pass is honored too; either one stops the stream.
+The callbacks run in the `Ai` layer, not in the effect that called `streamText`. An HTTP handler can return the response while the stream keeps going and `onEnd` still fires. When the `Ai` layer closes (e.g. at app shutdown), the stream is aborted and callbacks and tool executions still running are interrupted. An `abortSignal` you pass is honored too; either one stops the stream. Interrupting a fiber that consumes one of the result's streams or effects aborts the call too, but stopping early (`Stream.take`) does not. The SDK's own result, with its response helpers, is on `result.raw`.
 
 ## `tool`
 
@@ -196,7 +196,7 @@ const resilient = generateText({
 );
 ```
 
-`streamText` returns the stream synchronously, so its error channel only reports failures that happen before the stream starts. Errors during streaming arrive as `error` parts on the stream or through `onError`, as raw SDK errors.
+`streamText` returns the stream synchronously, so its own error channel only reports failures that happen before the stream starts. Errors during streaming fail the result's streams and effects with an `AiError` too. `stream` is the exception: it emits `error` and `abort` parts as data, which `textStream`, `partialOutputStream` and `elementStream` turn into failures. `onError` still receives the raw SDK error.
 
 ## License
 

@@ -1,6 +1,16 @@
 import * as AiSdk from 'ai';
-import { Deferred, Effect, Exit, Layer, Schema, Scope } from 'effect';
-import { describe, expect, expectTypeOf, test, vi } from 'vitest';
+import { MockLanguageModelV4 } from 'ai/test';
+import {
+	Deferred,
+	Effect,
+	Exit,
+	Fiber,
+	Layer,
+	Schema,
+	Scope,
+	Stream,
+} from 'effect';
+import { beforeEach, describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
 import { AiError, UnknownError } from '#src/ai-error.ts';
 import { effectSchema } from '#src/schema.ts';
@@ -14,6 +24,77 @@ vi.mock('ai', async (importOriginal) => {
 	};
 });
 
+const actual = await vi.importActual<typeof AiSdk>('ai');
+
+const usage = {
+	inputTokens: {
+		total: 3,
+		noCache: 3,
+		cacheRead: undefined,
+		cacheWrite: undefined,
+	},
+	outputTokens: { total: 10, text: 10, reasoning: undefined },
+};
+
+const textChunks = (...deltas: string[]) => [
+	{ type: 'stream-start' as const, warnings: [] },
+	{ type: 'text-start' as const, id: '1' },
+	...deltas.map((delta) => ({
+		type: 'text-delta' as const,
+		id: '1',
+		delta,
+	})),
+	{ type: 'text-end' as const, id: '1' },
+	{
+		type: 'finish' as const,
+		usage,
+		finishReason: { unified: 'stop' as const, raw: 'stop' },
+	},
+];
+
+type ModelChunk = ReturnType<typeof textChunks>[number];
+
+const modelFromStream = (makeStream: () => ReadableStream<unknown>) =>
+	new MockLanguageModelV4({
+		doStream: async () => ({ stream: makeStream() as never }),
+	});
+
+const modelFromChunks = (chunks: unknown[]) =>
+	modelFromStream(
+		() =>
+			new ReadableStream({
+				start(controller) {
+					for (const chunk of chunks) controller.enqueue(chunk);
+					controller.close();
+				},
+			}),
+	);
+
+/** Emits the chunks, then stays open until the SDK aborts it. */
+const hangingModel = (chunks: ModelChunk[]) =>
+	modelFromStream(
+		() =>
+			new ReadableStream({
+				start(controller) {
+					for (const chunk of chunks) controller.enqueue(chunk);
+				},
+			}),
+	);
+
+const sdkSignal = () => {
+	const params = vi.mocked(AiSdk.streamText).mock.calls[0]?.[0];
+	if (params?.abortSignal === undefined) throw new Error('no signal');
+	return params.abortSignal;
+};
+
+const useRealSdk = () => {
+	vi.mocked(AiSdk.streamText).mockImplementation(actual.streamText);
+};
+
+beforeEach(() => {
+	vi.mocked(AiSdk.streamText).mockReset();
+});
+
 describe('streamText', () => {
 	test('wraps synchronous return', () => {
 		const mockResult = { textStream: 'mock-stream' };
@@ -25,7 +106,7 @@ describe('streamText', () => {
 				prompt: 'test',
 			});
 
-			expect(result).toBe(mockResult);
+			expect(result.raw).toBe(mockResult);
 			expect(AiSdk.streamText).toHaveBeenCalledWith(
 				expect.objectContaining({ prompt: 'test' }),
 			);
@@ -186,6 +267,174 @@ describe('streamText', () => {
 	});
 });
 
+describe('streamText result', () => {
+	beforeEach(useRealSdk);
+
+	test('textStream collects the deltas and effects succeed', () =>
+		Effect.gen(function* () {
+			const result = yield* streamText({
+				model: modelFromChunks(textChunks('Hel', 'lo')),
+				prompt: 'hi',
+			});
+
+			expect(yield* Stream.runCollect(result.textStream)).toEqual([
+				'Hel',
+				'lo',
+			]);
+			expect(yield* result.text).toBe('Hello');
+			expect(yield* result.finishReason).toBe('stop');
+			expect((yield* result.usage).outputTokens).toBe(10);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('stream and fullStream emit the parts', () =>
+		Effect.gen(function* () {
+			const result = yield* streamText({
+				model: modelFromChunks(textChunks('Hi')),
+				prompt: 'hi',
+			});
+
+			const parts = yield* Stream.runCollect(result.stream);
+			expect(parts.map((part) => part.type)).toContain('text-delta');
+			expect(yield* Stream.runCollect(result.fullStream)).toEqual(parts);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('a thrown model stream error fails textStream and text with AiError', () =>
+		Effect.gen(function* () {
+			const boom = new Error('boom');
+			const result = yield* streamText({
+				model: modelFromStream(
+					() =>
+						new ReadableStream({
+							start(controller) {
+								controller.error(boom);
+							},
+						}),
+				),
+				prompt: 'hi',
+			});
+
+			const streamError = yield* Stream.runCollect(result.textStream).pipe(
+				Effect.flip,
+			);
+			expect(streamError).toBeInstanceOf(AiError);
+			expect(streamError.method).toBe('streamText');
+			expect(streamError.reason._tag).toBe('ai-effect/UnknownError');
+			expect(streamError.reason.cause).toBe(boom);
+
+			const textError = yield* result.text.pipe(Effect.flip);
+			expect(textError).toBeInstanceOf(AiError);
+			expect(textError.method).toBe('streamText');
+			expect(textError.reason._tag).toBe('ai-effect/UnknownError');
+			expect(textError.reason.cause).toBe(boom);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('an error chunk fails textStream but stream emits it as a part', () =>
+		Effect.gen(function* () {
+			const chunkError = new Error('chunk error');
+			const result = yield* streamText({
+				model: modelFromChunks([
+					...textChunks('Hi').slice(0, 3),
+					{ type: 'error', error: chunkError },
+				]),
+				prompt: 'hi',
+				onError: () => Effect.void,
+			});
+
+			const error = yield* Stream.runCollect(result.textStream).pipe(
+				Effect.flip,
+			);
+			expect(error).toBeInstanceOf(AiError);
+			expect(error.method).toBe('streamText');
+			expect(error.reason._tag).toBe('ai-effect/UnknownError');
+			expect(error.reason.cause).toBe(chunkError);
+
+			const parts = yield* Stream.runCollect(result.stream);
+			const errorPart = parts.find((part) => part.type === 'error');
+			expect(errorPart?.error).toBe(chunkError);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('a user abortSignal aborting mid-stream fails textStream as aborted', () =>
+		Effect.gen(function* () {
+			const userController = new AbortController();
+			const result = yield* streamText({
+				model: hangingModel(textChunks('Hi').slice(0, 3)),
+				prompt: 'hi',
+				abortSignal: userController.signal,
+			});
+
+			const error = yield* Stream.runCollect(
+				result.textStream.pipe(
+					Stream.tap(() => Effect.sync(() => userController.abort())),
+				),
+			).pipe(Effect.flip);
+			expect(error).toBeInstanceOf(AiError);
+			expect(error.method).toBe('streamText');
+			expect(error.reason._tag).toBe('ai-effect/UnknownError');
+			expect(error.message).toBe('streamText: aborted');
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('interrupting a textStream consumer aborts the call', () =>
+		Effect.gen(function* () {
+			const result = yield* streamText({
+				model: hangingModel(textChunks('Hi').slice(0, 3)),
+				prompt: 'hi',
+			});
+			const gotChunk = yield* Deferred.make<void>();
+
+			const fiber = yield* Stream.runDrain(
+				result.textStream.pipe(
+					Stream.tap(() => Deferred.succeed(gotChunk, undefined)),
+				),
+			).pipe(Effect.forkChild);
+			yield* Deferred.await(gotChunk);
+			expect(sdkSignal().aborted).toBe(false);
+
+			yield* Fiber.interrupt(fiber);
+			expect(sdkSignal().aborted).toBe(true);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('interrupting a fiber awaiting text aborts the call', () =>
+		Effect.gen(function* () {
+			const result = yield* streamText({
+				model: hangingModel(textChunks('Hi').slice(0, 3)),
+				prompt: 'hi',
+			});
+
+			const fiber = yield* Effect.forkChild(result.text);
+			yield* Effect.sleep(20);
+			expect(sdkSignal().aborted).toBe(false);
+
+			yield* Fiber.interrupt(fiber);
+			expect(sdkSignal().aborted).toBe(true);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('stopping textStream early with Stream.take does not abort the call', () =>
+		Effect.gen(function* () {
+			const result = yield* streamText({
+				model: hangingModel(textChunks('a', 'b', 'c').slice(0, 5)),
+				prompt: 'hi',
+			});
+
+			const taken = yield* Stream.runCollect(
+				result.textStream.pipe(Stream.take(1)),
+			);
+			expect(taken).toEqual(['a']);
+			expect(sdkSignal().aborted).toBe(false);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('completing or failing does not abort the call', () =>
+		Effect.gen(function* () {
+			const result = yield* streamText({
+				model: modelFromChunks(textChunks('Hi')),
+				prompt: 'hi',
+			});
+
+			yield* Stream.runDrain(result.textStream);
+			yield* result.text;
+			expect(sdkSignal().aborted).toBe(false);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+});
+
 // These are compile-time-only checks: a tsc-only regression (like OUTPUT
 // silently falling back to its default, or a swapped generic position) never
 // throws at runtime, so it can't be caught by `expect()` assertions above —
@@ -201,7 +450,29 @@ describe('type-level regressions', () => {
 		});
 		type StreamResult = Effect.Success<typeof program>;
 		expectTypeOf<StreamResult['output']>().toEqualTypeOf<
-			PromiseLike<{ readonly foo: string }>
+			Effect.Effect<{ readonly foo: string }, AiError>
+		>();
+		expectTypeOf<StreamResult['partialOutputStream']>().toEqualTypeOf<
+			Stream.Stream<
+				Effect.Success<StreamResult['output']> extends infer O
+					? Partial<O>
+					: never,
+				AiError
+			>
+		>();
+	});
+
+	test('streamText exposes Effect-typed streams and fields', () => {
+		const program = streamText({
+			model: {} as AiSdk.LanguageModel,
+			prompt: 'hi',
+		});
+		type StreamResult = Effect.Success<typeof program>;
+		expectTypeOf<StreamResult['textStream']>().toEqualTypeOf<
+			Stream.Stream<string, AiError>
+		>();
+		expectTypeOf<StreamResult['text']>().toEqualTypeOf<
+			Effect.Effect<string, AiError>
 		>();
 	});
 });
