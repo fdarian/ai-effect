@@ -29,6 +29,12 @@ export const markInstrumentable = <T extends ToolExecute>(
 	bindInstrument: (instrument: ToolInstrument) => ToolExecute,
 ): T => Object.assign(execute, { [TOOL_INSTRUMENT]: bindInstrument });
 
+/**
+ * An agent rebinds `settings.tools` and `prepareCall` may hand them back
+ * unchanged (`...rest`), so tools it already rebound must not get a second span.
+ */
+const reboundExecutes = new WeakSet<ToolExecute>();
+
 const isInstrumentable = (
 	execute: ToolExecute,
 ): execute is InstrumentableExecute => TOOL_INSTRUMENT in execute;
@@ -113,7 +119,7 @@ export const rebindTools = <TOOLS extends AiSdk.ToolSet>(
 
 		const rebind = (name: string, tool: AiSdk.Tool): AiSdk.Tool => {
 			const execute = tool.execute as ToolExecute | undefined;
-			if (execute === undefined) return tool;
+			if (execute === undefined || reboundExecutes.has(execute)) return tool;
 
 			if (isInstrumentable(execute)) {
 				const instrumented = execute[TOOL_INSTRUMENT]((effect, callOptions) =>
@@ -125,6 +131,7 @@ export const rebindTools = <TOOLS extends AiSdk.ToolSet>(
 						);
 					}),
 				);
+				reboundExecutes.add(instrumented);
 				return { ...tool, execute: instrumented } as AiSdk.Tool;
 			}
 
@@ -137,6 +144,7 @@ export const rebindTools = <TOOLS extends AiSdk.ToolSet>(
 					throw error;
 				}
 			};
+			reboundExecutes.add(traced);
 			return { ...tool, execute: traced } as AiSdk.Tool;
 		};
 

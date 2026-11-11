@@ -105,6 +105,7 @@ export function createUIMessageStream<
 			reason: reasonFromSdkError(cause),
 		});
 
+	// Spans the whole run, so `execute`'s fibers and any ai-effect call inside it parent under it.
 	return Stream.unwrap(
 		Effect.gen(function* () {
 			const ai = yield* Ai;
@@ -137,5 +138,7 @@ export function createUIMessageStream<
 				onError: failed,
 			}).pipe(abortOnInterrupt(controller));
 		}),
+	).pipe(
+		Stream.withSpan('ai-effect.createUIMessageStream', { kind: 'internal' }),
 	);
 }

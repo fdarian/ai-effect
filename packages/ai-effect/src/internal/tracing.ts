@@ -56,6 +56,9 @@ const FINISH_REASONS: Record<string, string> = {
 export const mapFinishReason = (finishReason: string): string =>
 	FINISH_REASONS[finishReason] ?? finishReason;
 
+export const agentSpanName = (id: string | undefined, method: Method) =>
+	id === undefined ? `ai-effect.${method}` : `invoke_agent ${id}`;
+
 export const modelIdOf = (model: string | { readonly modelId: string }) =>
 	typeof model === 'string' ? model : model.modelId;
 

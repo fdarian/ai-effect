@@ -12,7 +12,15 @@ import {
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
-import type { ToolLoopAgent } from '#src/tool-loop-agent.ts';
+import {
+	agentSpanName,
+	streamLifecycleCallbacks,
+	withStreamSpan,
+} from '#src/internal/tracing.ts';
+import {
+	AGENT_TRACING_HOOKS,
+	type ToolLoopAgent,
+} from '#src/tool-loop-agent.ts';
 
 const CREATE_AGENT_UI_STREAM_CALLBACK_KEYS = [
 	'onStepEnd',
@@ -138,41 +146,61 @@ export function createAgentUIStream<
 
 	return Effect.gen(function* () {
 		const ai = yield* Ai;
-		const runPromise = yield* makeRunPromise<R>();
-		const callController = new AbortController();
+		const hooks = params.agent[AGENT_TRACING_HOOKS];
 
-		// Not the fiber's signal: the stream outlives this Effect.
-		const uiStream = yield* Effect.tryPromise({
-			try: () =>
-				AiSdk.createAgentUIStream({
-					...params,
-					...wrapCallbacks(
-						runPromise,
-						params,
-						CREATE_AGENT_UI_STREAM_CALLBACK_KEYS,
-					),
-					agent: params.agent.raw,
-					abortSignal: combineAbortSignals(
+		return yield* withStreamSpan(
+			agentSpanName(params.agent.id, 'createAgentUIStream'),
+			{ kind: 'internal', attributes: hooks.requestAttributes(true) },
+			(call) =>
+				Effect.gen(function* () {
+					const runPromise = yield* makeRunPromise<R>();
+					const callController = new AbortController();
+					const abortSignal = combineAbortSignals(
 						ai.abortSignal,
 						callController.signal,
 						params.abortSignal,
-					),
-				} as OriginalParams<
-					CALL_OPTIONS,
-					TOOLS,
-					RUNTIME_CONTEXT,
-					OUTPUT,
-					MESSAGE_METADATA,
-					UI_MESSAGE
-				>),
-			catch: failedStart,
-		}).pipe(
-			Effect.onInterrupt(() => Effect.sync(() => callController.abort())),
-		);
+					);
+					// The agent settings have no `streamRetries`, so the SDK never retries.
+					const agent = yield* hooks.buildSdkAgent({
+						call,
+						callbacks: streamLifecycleCallbacks(call, {
+							method: 'createAgentUIStream',
+							signal: abortSignal,
+							userSignal: params.abortSignal,
+							errorMayBeRetried: false,
+						}),
+					});
 
-		return Stream.fromReadableStream({
-			evaluate: () => uiStream,
-			onError: failed,
-		}).pipe(abortOnInterrupt(callController));
+					// Not the fiber's signal: the stream outlives this Effect.
+					const uiStream = yield* Effect.tryPromise({
+						try: () =>
+							AiSdk.createAgentUIStream({
+								...params,
+								...wrapCallbacks(
+									runPromise,
+									params,
+									CREATE_AGENT_UI_STREAM_CALLBACK_KEYS,
+								),
+								agent,
+								abortSignal,
+							} as OriginalParams<
+								CALL_OPTIONS,
+								TOOLS,
+								RUNTIME_CONTEXT,
+								OUTPUT,
+								MESSAGE_METADATA,
+								UI_MESSAGE
+							>),
+						catch: failedStart,
+					}).pipe(
+						Effect.onInterrupt(() => Effect.sync(() => callController.abort())),
+					);
+
+					return Stream.fromReadableStream({
+						evaluate: () => uiStream,
+						onError: failed,
+					}).pipe(abortOnInterrupt(callController));
+				}),
+		);
 	});
 }

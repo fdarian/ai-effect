@@ -14,6 +14,19 @@ import {
 	makeStreamTextResult,
 	type StreamTextResult,
 } from '#src/internal/stream-text-result.ts';
+import { rebindTools } from '#src/internal/tool-tracing.ts';
+import {
+	agentSpanName,
+	type CallSpan,
+	composeCallbacks,
+	streamLifecycleCallbacks,
+	TEXT_CALLBACK_ALIASES,
+	type TracingCallbacks,
+	textCallbacks,
+	textRequestAttributes,
+	withCallSpan,
+	withStreamSpan,
+} from '#src/internal/tracing.ts';
 
 // `onStepError` arrives via GENERATE_TEXT_CALLBACK_KEYS; it, `onError` and
 // `onAbort` can only be set on the settings: the SDK doesn't accept them per
@@ -116,6 +129,29 @@ type EffectifyCallParams<P, R> = P extends unknown
 	? EffectifyCallbacks<P, CallCallbackKeys, R>
 	: never;
 
+/**
+ * Lets `createAgentUIStream` build the per-call SDK agent. A symbol key keeps
+ * it off the public surface; it is not re-exported from the package entry.
+ */
+export const AGENT_TRACING_HOOKS = Symbol('ai-effect/tool-loop-agent/hooks');
+
+export type AgentCallTracing = {
+	readonly call: CallSpan;
+	readonly callbacks: TracingCallbacks;
+};
+
+export type AgentTracingHooks<
+	CALL_OPTIONS,
+	TOOLS extends AiSdk.ToolSet,
+	RUNTIME_CONTEXT extends Record<string, unknown>,
+	OUTPUT extends AiSdk.Output.Output,
+> = {
+	readonly requestAttributes: (stream: boolean) => Record<string, unknown>;
+	readonly buildSdkAgent: (
+		tracing: AgentCallTracing,
+	) => Effect.Effect<SdkAgent<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>>;
+};
+
 export interface ToolLoopAgent<
 	CALL_OPTIONS = never,
 	// biome-ignore lint/complexity/noBannedTypes: same default as the SDK's ToolLoopAgent
@@ -127,10 +163,16 @@ export interface ToolLoopAgent<
 	readonly tools: TOOLS;
 	/**
 	 * The SDK agent, for everything that isn't wrapped. Calling `raw.stream` or
-	 * `raw.generate` directly bypasses the `Ai` layer's abort signal and the
-	 * Effect callback bridging.
+	 * `raw.generate` directly bypasses the `Ai` layer's abort signal, the Effect
+	 * callback bridging and Effect tracing.
 	 */
 	readonly raw: SdkAgent<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>;
+	readonly [AGENT_TRACING_HOOKS]: AgentTracingHooks<
+		CALL_OPTIONS,
+		TOOLS,
+		RUNTIME_CONTEXT,
+		OUTPUT
+	>;
 	readonly generate: <R = never>(
 		params: EffectifyCallParams<
 			OriginalGenerateParams<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>,
@@ -175,44 +217,121 @@ function make<
 > {
 	return Effect.gen(function* () {
 		const runPromise = yield* makeRunPromise<R>();
+		const wrapped = wrapCallbacks(runPromise, settings, SETTINGS_CALLBACK_KEYS);
 
 		const agent = new AiSdk.ToolLoopAgent({
 			...settings,
-			...wrapCallbacks(runPromise, settings, SETTINGS_CALLBACK_KEYS),
+			...wrapped,
 		} as OriginalSettings<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>);
+
+		const buildSdkAgent = (tracing: AgentCallTracing) =>
+			Effect.gen(function* () {
+				const services = yield* Effect.context<never>();
+				const rebind = (tools: TOOLS | undefined) =>
+					Effect.runSyncWith(services)(
+						rebindTools<TOOLS>(tools, {
+							parent: tracing.call.span,
+							agentName: agent.id,
+						}),
+					);
+				const tools = rebind(settings.tools);
+				const userPrepareCall = (
+					settings as OriginalSettings<
+						CALL_OPTIONS,
+						TOOLS,
+						RUNTIME_CONTEXT,
+						OUTPUT
+					>
+				).prepareCall;
+
+				return new AiSdk.ToolLoopAgent({
+					...settings,
+					...wrapped,
+					...composeCallbacks(
+						wrapped,
+						tracing.callbacks,
+						TEXT_CALLBACK_ALIASES,
+						{
+							// Setting `onError` replaces the SDK's default logger.
+							onError: ({ error }: { error: unknown }) => console.error(error),
+						},
+					),
+					...(tools === undefined ? {} : { tools }),
+					...(userPrepareCall === undefined
+						? {}
+						: {
+								// `prepareCall` may return its own `tools`, which would escape the rebinding above.
+								prepareCall: async (options: never) => {
+									const prepared = await userPrepareCall(options);
+									if (prepared?.tools === undefined) return prepared;
+									return {
+										...prepared,
+										tools: rebind(prepared.tools as TOOLS),
+									};
+								},
+							}),
+				} as OriginalSettings<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>);
+			});
 
 		return {
 			id: agent.id,
 			tools: agent.tools,
 			raw: agent,
+			[AGENT_TRACING_HOOKS]: {
+				requestAttributes: (stream) =>
+					textRequestAttributes(settings, { stream, agentName: agent.id }),
+				buildSdkAgent,
+			},
 			generate: <CALL_R = never>(
 				params: EffectifyCallParams<
 					OriginalGenerateParams<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>,
 					CALL_R
 				>,
 			) =>
-				Effect.gen(function* () {
-					const callRunPromise = yield* makeRunPromise<CALL_R>();
+				withCallSpan(
+					agentSpanName(agent.id, 'ToolLoopAgent.generate'),
+					{
+						kind: 'internal',
+						attributes: textRequestAttributes(settings, {
+							stream: false,
+							agentName: agent.id,
+						}),
+					},
+					(call) =>
+						Effect.gen(function* () {
+							const callRunPromise = yield* makeRunPromise<CALL_R>();
+							const sdkAgent = yield* buildSdkAgent({
+								call,
+								callbacks: textCallbacks(call),
+							});
 
-					return yield* Effect.tryPromise({
-						try: (signal) =>
-							agent.generate({
-								...params,
-								...wrapCallbacks(callRunPromise, params, CALL_CALLBACK_KEYS),
-								abortSignal: combineAbortSignals(signal, params.abortSignal),
-							} as OriginalGenerateParams<
-								CALL_OPTIONS,
-								TOOLS,
-								RUNTIME_CONTEXT,
-								OUTPUT
-							>),
-						catch: (cause) =>
-							new AiError({
-								method: 'ToolLoopAgent.generate',
-								reason: reasonFromSdkError(cause),
-							}),
-					});
-				}),
+							return yield* Effect.tryPromise({
+								try: (signal) =>
+									sdkAgent.generate({
+										...params,
+										...wrapCallbacks(
+											callRunPromise,
+											params,
+											CALL_CALLBACK_KEYS,
+										),
+										abortSignal: combineAbortSignals(
+											signal,
+											params.abortSignal,
+										),
+									} as OriginalGenerateParams<
+										CALL_OPTIONS,
+										TOOLS,
+										RUNTIME_CONTEXT,
+										OUTPUT
+									>),
+								catch: (cause) =>
+									new AiError({
+										method: 'ToolLoopAgent.generate',
+										reason: reasonFromSdkError(cause),
+									}),
+							});
+						}),
+				),
 			stream: <CALL_R = never>(
 				params: EffectifyCallParams<
 					OriginalStreamParams<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>,
@@ -221,41 +340,71 @@ function make<
 			) =>
 				Effect.gen(function* () {
 					const ai = yield* Ai;
-					const callRunPromise = yield* makeRunPromise<CALL_R>();
 
-					const callController = new AbortController();
-
-					// Not the fiber's signal: the stream outlives this Effect.
-					const raw = yield* Effect.tryPromise({
-						try: () =>
-							agent.stream({
-								...params,
-								...wrapCallbacks(callRunPromise, params, CALL_CALLBACK_KEYS),
-								abortSignal: combineAbortSignals(
+					return yield* withStreamSpan(
+						agentSpanName(agent.id, 'ToolLoopAgent.stream'),
+						{
+							kind: 'internal',
+							attributes: textRequestAttributes(settings, {
+								stream: true,
+								agentName: agent.id,
+							}),
+						},
+						(call) =>
+							Effect.gen(function* () {
+								const callRunPromise = yield* makeRunPromise<CALL_R>();
+								const callController = new AbortController();
+								const abortSignal = combineAbortSignals(
 									ai.abortSignal,
 									callController.signal,
 									params.abortSignal,
-								),
-							} as OriginalStreamParams<
-								CALL_OPTIONS,
-								TOOLS,
-								RUNTIME_CONTEXT,
-								OUTPUT
-							>),
-						catch: (cause) =>
-							new AiError({
-								method: 'ToolLoopAgent.stream',
-								reason: reasonFromSdkError(cause),
-							}),
-					}).pipe(
-						Effect.onInterrupt(() => Effect.sync(() => callController.abort())),
-					);
+								);
+								// The agent settings have no `streamRetries`, so the SDK never retries.
+								const sdkAgent = yield* buildSdkAgent({
+									call,
+									callbacks: streamLifecycleCallbacks(call, {
+										method: 'ToolLoopAgent.stream',
+										signal: abortSignal,
+										userSignal: params.abortSignal,
+										errorMayBeRetried: false,
+									}),
+								});
 
-					return makeStreamTextResult(
-						'ToolLoopAgent.stream',
-						raw,
-						callController,
-						agent.tools,
+								// Not the fiber's signal: the stream outlives this Effect.
+								const raw = yield* Effect.tryPromise({
+									try: () =>
+										sdkAgent.stream({
+											...params,
+											...wrapCallbacks(
+												callRunPromise,
+												params,
+												CALL_CALLBACK_KEYS,
+											),
+											abortSignal,
+										} as OriginalStreamParams<
+											CALL_OPTIONS,
+											TOOLS,
+											RUNTIME_CONTEXT,
+											OUTPUT
+										>),
+									catch: (cause) =>
+										new AiError({
+											method: 'ToolLoopAgent.stream',
+											reason: reasonFromSdkError(cause),
+										}),
+								}).pipe(
+									Effect.onInterrupt(() =>
+										Effect.sync(() => callController.abort()),
+									),
+								);
+
+								return makeStreamTextResult(
+									'ToolLoopAgent.stream',
+									raw,
+									callController,
+									agent.tools,
+								);
+							}),
 					);
 				}),
 		};
