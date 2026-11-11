@@ -1,6 +1,6 @@
 # ai-effect
 
-Effect wrappers for the [AI SDK](https://ai-sdk.dev)'s `generateText`, `streamText` and `tool`. Callbacks and tool `execute` functions are Effects that can use your services, and calls fail with a typed `AiError`.
+Effect wrappers for the [AI SDK](https://ai-sdk.dev)'s `generateText`, `streamText` and `tool`. Callbacks and tool `execute` functions are Effects that can use your services, and calls fail with a typed `AiError` that says why they failed.
 
 The package version tracks the AI SDK major: `ai-effect@7` wraps `ai@7`.
 
@@ -147,7 +147,20 @@ const recipe = generateText({
 
 ## Errors
 
-A failed SDK call fails the effect with `AiError` (tag `ai-effect/AiError`). The SDK's error is on `cause`:
+A failed `generateText` or `streamText` call fails the effect with one `AiError` (tag `ai-effect/AiError`). It has the `method` that failed and a `reason` describing why, plus `message` and `isRetryable` derived from the reason.
+
+| `reason._tag`         | Cause                                                                                    | `isRetryable`               |
+| --------------------- | ---------------------------------------------------------------------------------------- | --------------------------- |
+| `RateLimitError`      | HTTP 429; `retryAfter` is a `Duration` parsed from the `retry-after` header when present | yes                         |
+| `AuthenticationError` | HTTP 401 or 403                                                                          | no                          |
+| `InvalidRequestError` | HTTP 400, 404, 409 or 422, or a bad prompt, argument, model or unsupported feature       | no                          |
+| `ProviderError`       | HTTP 5xx, or a network failure with no status                                            | the SDK's own `isRetryable` |
+| `InvalidOutputError`  | the model returned no output, or output that failed parsing, validation or tool lookup   | yes                         |
+| `UnknownError`        | anything else, including errors thrown by your own code                                  | no                          |
+
+Every reason has a `message` and a `cause` holding the raw SDK error, and a `statusCode` when the provider returned one. If the SDK retried and gave up, `cause` is the last underlying error rather than the SDK's retry wrapper.
+
+Handle one reason with `Effect.catchReason`; other reasons stay in the error channel:
 
 ```ts
 import { generateText } from 'ai-effect';
@@ -158,14 +171,29 @@ const reply = generateText({
 	prompt: 'Hello!',
 }).pipe(
 	Effect.map((result) => result.text),
-	Effect.catchTag('ai-effect/AiError', (error) =>
-		Effect.as(
-			Effect.logError('AI SDK error', error.cause),
-			'Fallback response',
+	Effect.catchReason('ai-effect/AiError', 'RateLimitError', (reason) =>
+		Effect.logWarning('rate limited', reason.retryAfter).pipe(
+			Effect.as('Fallback response'),
 		),
 	),
 );
 ```
+
+Use `isRetryable` to drive a retry policy:
+
+```ts
+const resilient = generateText({
+	model: 'openai/gpt-5',
+	prompt: 'Hello!',
+}).pipe(
+	Effect.retry({
+		while: (error) => error.isRetryable,
+		times: 3,
+	}),
+);
+```
+
+`streamText` returns the stream synchronously, so its error channel only reports failures that happen before the stream starts. Errors during streaming arrive as `error` parts on the stream or through `onError`, as raw SDK errors.
 
 ## License
 
