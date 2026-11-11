@@ -1,0 +1,64 @@
+---
+title: Generating text
+description: generateText and streamText as Effects, streaming with Effect Streams, and how cancellation works.
+---
+
+`generateText` and `streamText` take the same options as the [AI SDK versions](https://ai-sdk.dev/docs/reference/ai-sdk-core/generate-text). `generateText` returns an Effect of the same result; `streamText` returns an Effect of an Effect-typed [stream result](#streamtext). The error type is [`AiError`](/concepts/errors) and the requirements are `Ai` plus whatever your callbacks use.
+
+## Callbacks are Effects
+
+Pass an Effect wherever the SDK takes a callback. It can use any service available at the call site:
+
+```ts main.ts
+import { generateText } from 'ai-effect';
+import { Effect } from 'effect';
+
+const summary = generateText({
+	model: 'openai/gpt-5',
+	prompt: 'Summarize the water cycle.',
+	onEnd: (event) => Effect.log(`Tokens used: ${event.usage.totalTokens}`),
+});
+```
+
+Callback Effects cannot fail (their error type is `never`), so handle errors inside them. They run in the `Ai` layer, not in the fiber that made the call.
+
+## `generateText`
+
+Interrupting the `generateText` Effect aborts the underlying request. An `abortSignal` you pass is still honored; either one stops the call.
+
+## `streamText`
+
+`streamText` returns a `StreamTextResult` as soon as the stream is set up. It needs no `Effect.scoped`. Unlike `generateText`, it is not the SDK's result: the streams are Effect `Stream`s and the awaitable fields are Effects, all failing with [`AiError`](/concepts/errors):
+
+- Streams: `textStream`, `partialOutputStream`, `elementStream` and `stream` (the full parts, with `error` and `abort` parts emitted as data). The first three fail on an error or abort part instead of dropping it.
+- Field Effects: `text`, `content`, `usage`, `finishReason`, `toolCalls`, `toolResults`, `steps`, `output` and the rest of the SDK's promise fields.
+- `toUIMessageStream()`, which converts the result for a chat UI; see [UI message streams](/core/ui-streams).
+- `raw`, the SDK's own result, for its response helpers such as `toTextStreamResponse()` and for `consumeStream`.
+
+```ts main.ts
+import { streamText } from 'ai-effect';
+import { Console, Effect, Stream } from 'effect';
+
+const chat = (prompt: string) =>
+	Effect.gen(function* () {
+		const result = yield* streamText({
+			model: 'openai/gpt-5',
+			prompt,
+			onEnd: (event) =>
+				Effect.log(`Streamed ${event.usage.totalTokens} tokens`),
+		});
+		yield* Stream.runForEach(result.textStream, (chunk) => Console.log(chunk));
+		return yield* result.usage;
+	});
+```
+
+### Cancellation
+
+Whether work stops depends on what you do with the result:
+
+- Interrupting a fiber that consumes any of the streams, or one awaiting a field Effect such as `text`, aborts the call.
+- Stopping early, for example with `Stream.take`, does not abort it. Neither does finishing or failing normally.
+- Dropping the result without consuming it aborts nothing; the call runs to its end.
+- Closing the `Ai` layer, or aborting an `abortSignal` you passed, still aborts the call.
+
+Errors thrown while the stream is set up fail the `streamText` Effect itself. Errors during streaming fail the stream or field Effect with an `AiError`, both with `method` `'streamText'`. See [Errors](/concepts/errors#streaming-errors).

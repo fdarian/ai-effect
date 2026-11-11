@@ -1,0 +1,87 @@
+---
+title: Tracing
+description: The Effect spans every ai-effect call records, and how to see them.
+---
+
+Every ai-effect call records an Effect span, so a slow or failing model call shows up in whatever tracer your app already uses. Nothing is enabled or configured: the spans go to the `Tracer` provided where the call runs.
+
+## Spans
+
+| Call | Span name | Kind |
+| --- | --- | --- |
+| `generateText` | `ai-effect.generateText` | internal |
+| `streamText` | `ai-effect.streamText` | internal |
+| `ToolLoopAgent` `generate` and `stream` | `invoke_agent {id}`, or `ai-effect.ToolLoopAgent.generate` / `.stream` without an `id` | internal |
+| `createAgentUIStream` | `invoke_agent {id}`, or `ai-effect.createAgentUIStream` | internal |
+| `createUIMessageStream` | `ai-effect.createUIMessageStream` | internal |
+| `embed`, `embedMany` | `embeddings {modelId}` | client |
+| `rerank` | `rerank {modelId}` | client |
+| a tool's `execute` | `execute_tool {name}` | internal |
+
+Attributes follow the [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/):
+
+| Attributes | Recorded on |
+| --- | --- |
+| `gen_ai.operation.name`, `gen_ai.agent.name` | call spans |
+| `gen_ai.request.model`, `gen_ai.provider.name` (mapped, for example `google` becomes `gcp.gemini`) | text calls |
+| `gen_ai.request.temperature`, `top_p`, `top_k`, `max_tokens`, `frequency_penalty`, `presence_penalty`, `stop_sequences`, `seed`, `stream` | text calls, when set |
+| `gen_ai.response.id`, `gen_ai.response.model`, `gen_ai.response.finish_reasons` | text calls, once finished |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, plus cache read, cache write and reasoning tokens when non-zero | text calls, once finished |
+| `gen_ai.usage.input_tokens`, `gen_ai.embeddings.dimension.count` | embeddings |
+| `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `gen_ai.tool.description` | tool spans |
+| `error.type`, the [`AiError`](/concepts/errors) reason's `_tag` | any span that failed |
+
+Prompts, completions and tool inputs and outputs are not recorded.
+
+## See them
+
+An Effect `Tracer` is a service, and a layer replaces it. This one prints each span when it ends:
+
+```ts main.ts
+import { Ai, generateText } from 'ai-effect';
+import { Effect, Layer, Option, Tracer } from 'effect';
+
+class PrintSpan extends Tracer.NativeSpan {
+	override end(endTime: bigint, exit: Parameters<Tracer.NativeSpan['end']>[1]) {
+		super.end(endTime, exit);
+		const parent = Option.isSome(this.parent) ? this.parent.value.spanId : '-';
+		console.log(this.name, { parent }, Object.fromEntries(this.attributes));
+	}
+}
+
+const PrintTracer = Layer.succeed(
+	Tracer.Tracer,
+	Tracer.make({ span: (options) => new PrintSpan(options) }),
+);
+
+generateText({ model: 'openai/gpt-5', prompt: 'Hello!' }).pipe(
+	Effect.provide(Layer.merge(Ai.layer, PrintTracer)),
+	Effect.runPromise,
+);
+```
+
+It prints a line such as this, with the attributes from the table above:
+
+```txt
+ai-effect.generateText { parent: "-" } {
+  "gen_ai.operation.name": "invoke_agent",
+  "gen_ai.response.finish_reasons": [ "stop" ],
+  "gen_ai.usage.input_tokens": 3,
+  "gen_ai.usage.output_tokens": 10,
+  ...
+}
+```
+
+To send spans to a backend, see [OpenTelemetry](/observability/opentelemetry).
+
+## Tools
+
+Any tool with an `execute` that you pass to an ai-effect call gets an `execute_tool {name}` span, parented to the call's span. That includes plain SDK tools, not only ones made with `tool`. Spans you create inside an Effect `execute` nest under it.
+
+## Streams
+
+`streamText`, `ToolLoopAgent.stream`, `createAgentUIStream` and `createUIMessageStream` return before the model has finished, but their span does not end with the returning Effect. It ends when the SDK finishes or aborts, so its duration covers the whole stream. An interrupted stream ends its span as interrupted.
+
+## `agent.raw` is not traced
+
+[`agent.raw`](/core/agents) is the SDK's own agent. Calling it directly records no spans, and its callbacks are not Effects.

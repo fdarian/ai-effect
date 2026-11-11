@@ -1,0 +1,113 @@
+---
+title: Agents
+description: ToolLoopAgent.make, an AI SDK agent whose callbacks, tools and calls are Effects.
+---
+
+`ToolLoopAgent.make` takes the same settings as the [AI SDK's `ToolLoopAgent`](https://ai-sdk.dev/docs/agents/building-agents) and returns an Effect of an agent. Building it needs `Ai`. `generate` returns an Effect of the SDK's own result; `stream` returns an Effect of a [`StreamTextResult`](/core/generating-text#streamtext).
+
+```ts main.ts
+import { Ai, ToolLoopAgent, tool } from 'ai-effect';
+import { stepCountIs } from 'ai';
+import { Effect, Schema } from 'effect';
+
+const program = Effect.gen(function* () {
+	const weather = yield* tool({
+		description: 'Get the current temperature for a city',
+		inputSchema: Schema.Struct({ city: Schema.String }),
+		execute: ({ city }) => Effect.succeed({ city, temperature: 21 }),
+	});
+
+	const agent = yield* ToolLoopAgent.make({
+		model: 'openai/gpt-5',
+		instructions: 'You are a weather assistant.',
+		tools: { weather },
+		stopWhen: stepCountIs(5),
+		onStepEnd: (step) => Effect.log(`Finished a step: ${step.finishReason}`),
+	});
+
+	const result = yield* agent.generate({
+		prompt: 'What is the temperature in Paris?',
+	});
+	return result.text;
+});
+
+program.pipe(Effect.provide(Ai.layer), Effect.runPromise);
+```
+
+The agent has `id`, `tools`, `generate`, `stream` and `raw`. It is not an SDK `ToolLoopAgent` instance, so SDK helpers that take an agent, such as `createAgentUIStreamResponse`, do not accept it. To serve it to a chat UI, use `createAgentUIStream` ([UI message streams](/core/ui-streams)). `raw` is the SDK agent for anything else, but calling it bypasses tracing, the `Ai` layer's abort signal and Effect callbacks.
+
+## Which services go where
+
+Services reach your code from three places, and each is fixed where you provide it:
+
+| Code | Its services are required by |
+| --- | --- |
+| callbacks in the settings passed to `make` | `ToolLoopAgent.make` |
+| callbacks passed to one `generate` or `stream` call | that call |
+| a tool's `execute` and its other callbacks | the `yield* tool(...)` that built it |
+
+`make` therefore fails to compile until the services its callbacks use are provided, and a call fails to compile for the same reason. The settings callbacks run on every call, and the call's own callbacks run in addition to them. All of them run in the `Ai` layer, as on [`generateText`](/core/generating-text#callbacks-are-effects), and cannot fail.
+
+As in the SDK, `onStepError`, `onError` and `onAbort` can only be set in the settings, not per call.
+
+## Share one agent
+
+Because building the agent is an Effect, it fits a service: build it once in the layer and every caller shares it.
+
+```ts main.ts
+import { Ai, ToolLoopAgent, tool } from 'ai-effect';
+import { Context, Effect, Layer, Schema } from 'effect';
+
+class Weather extends Context.Service<Weather>()('app/Weather', {
+	make: Effect.succeed({
+		getTemperature: (city: string) => Effect.succeed(city.length + 10),
+	}),
+}) {
+	static readonly layer = Layer.effect(Weather, Weather.make);
+}
+
+class WeatherAgent extends Context.Service<WeatherAgent>()('app/WeatherAgent', {
+	make: Effect.gen(function* () {
+		const weather = yield* tool({
+			inputSchema: Schema.Struct({ city: Schema.String }),
+			execute: ({ city }) =>
+				Effect.gen(function* () {
+					const service = yield* Weather;
+					return yield* service.getTemperature(city);
+				}),
+		});
+		return yield* ToolLoopAgent.make({
+			model: 'openai/gpt-5',
+			tools: { weather },
+		});
+	}),
+}) {
+	static readonly layer = Layer.effect(WeatherAgent, WeatherAgent.make);
+}
+
+const program = Effect.gen(function* () {
+	const agent = yield* WeatherAgent;
+	const result = yield* agent.generate({ prompt: 'How warm is Paris?' });
+	return result.text;
+});
+
+program.pipe(
+	Effect.provide(WeatherAgent.layer),
+	Effect.provide(Layer.mergeAll(Ai.layer, Weather.layer)),
+	Effect.runPromise,
+);
+```
+
+`WeatherAgent.layer` requires `Ai` and `Weather`, so the layers it needs are checked where you assemble the app.
+
+## `generate` and `stream`
+
+`generate` fails with an [`AiError`](/concepts/errors) whose `method` is `'ToolLoopAgent.generate'`, and `stream` with `'ToolLoopAgent.stream'`. `make` itself cannot fail.
+
+Interrupting `generate` aborts the call and interrupts any tool `execute` still running. An `abortSignal` you pass is also honored.
+
+`stream` returns the same `StreamTextResult` as [`streamText`](/core/generating-text#streamtext) and follows the same [cancellation rules](/core/generating-text#cancellation). Errors during streaming fail the stream or field Effect with an `AiError` whose `method` is `'ToolLoopAgent.stream'`.
+
+:::warning[Invalid call options are retryable]
+With a `callOptionsSchema`, `options` that fail it fail the call with an `ai-effect/InvalidOutputError`, whose `isRetryable` is `true`. A retry policy driven by `isRetryable` will resend the same bad options.
+:::

@@ -11,5 +11,18 @@
 			"correctness": { "noUnusedImports": { "level": "warn", "fix": "safe" } }
 		}
 	},
-	"assist": { "actions": { "source": { "organizeImports": "on" } } }
+	"assist": { "actions": { "source": { "organizeImports": "on" } } },
+	"overrides": [
+		{
+			"includes": ["**/*.astro"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUnusedImports": "off",
+						"noUnusedVariables": "off"
+					}
+				}
+			}
+		}
+	]
 }

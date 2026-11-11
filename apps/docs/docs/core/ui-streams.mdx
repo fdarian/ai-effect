@@ -1,0 +1,140 @@
+---
+title: UI message streams
+description: Stream UI messages to a chat client, as Effect Streams you can compose and return as an HTTP response.
+---
+
+The AI SDK's [UI message stream](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) is what `useChat` reads from a server. ai-effect exposes it as an Effect `Stream` of the SDK's chunks, so you can merge, transform and tap it with the usual `Stream` operators. Chunks are the SDK's own; see its docs for their shape.
+
+There are three ways to make one, depending on what you start from.
+
+## From `streamText`
+
+The result of [`streamText`](/core/generating-text#streamtext) has `toUIMessageStream`:
+
+```ts main.ts
+import { streamText } from 'ai-effect';
+import { Console, Effect, Stream } from 'effect';
+
+const program = Effect.gen(function* () {
+	const result = yield* streamText({
+		model: 'openai/gpt-5',
+		prompt: 'Write a haiku about rivers.',
+	});
+	yield* Stream.runForEach(result.toUIMessageStream(), (chunk) =>
+		Console.log(chunk.type),
+	);
+});
+```
+
+It takes the SDK's options. `messageMetadata` and `onError` stay synchronous functions; the step and end callbacks are Effects, like [callbacks on `generateText`](/core/generating-text#callbacks-are-effects).
+
+## Compose with `createUIMessageStream`
+
+To write your own chunks, or to combine several sources into one response, use `createUIMessageStream`. Its `execute` is an Effect that gets a `writer`:
+
+```ts main.ts
+import { createUIMessageStream, streamText } from 'ai-effect';
+import { Effect } from 'effect';
+
+const stream = createUIMessageStream({
+	execute: ({ writer }) =>
+		Effect.gen(function* () {
+			yield* writer.write({ type: 'start' });
+			const result = yield* streamText({
+				model: 'openai/gpt-5',
+				prompt: 'Write a haiku about rivers.',
+			});
+			yield* writer.merge(result.toUIMessageStream());
+		}),
+	onEnd: () => Effect.log('stream finished'),
+});
+```
+
+`onStepEnd`, `onStepFinish`, `onEnd` and `onFinish` are Effects, and `execute` can use any service available where you build the stream. The writer has:
+
+| Member | What it does |
+| --- | --- |
+| `write(chunk)` | Emits one chunk |
+| `merge(stream)` | Forwards another stream of chunks into this one |
+| `setOutcome(outcome)` | Sets the SDK's stream outcome |
+| `raw` | The SDK's writer, for anything not wrapped |
+
+The result is a `Stream` that fails with an [`AiError`](/concepts/errors) and requires `Ai`. Running it again calls `execute` again.
+
+:::warning[A failing `execute` still succeeds]
+If `execute` fails, the SDK emits an `error` chunk and the stream ends normally, so the failure reaches your client as a chunk, not through the stream's error channel. Use `onError` to choose the message the chunk carries.
+:::
+
+## From an agent
+
+`createAgentUIStream` runs a [`ToolLoopAgent`](/core/agents) over the `UIMessage`s a client sends. It takes the SDK's options plus `agent` and `uiMessages`, and the agent must come from `ToolLoopAgent.make`:
+
+```ts main.ts
+import { createAgentUIStream, ToolLoopAgent } from 'ai-effect';
+import type { UIMessage } from 'ai';
+import { Effect } from 'effect';
+
+const chat = (uiMessages: Array<UIMessage>) =>
+	Effect.gen(function* () {
+		const agent = yield* ToolLoopAgent.make({ model: 'openai/gpt-5' });
+		return yield* createAgentUIStream({ agent, uiMessages });
+	});
+```
+
+Unlike the other two, it returns an Effect of the stream. Invalid `uiMessages` (an [`InvalidRequestError`](/concepts/errors#reasons), which is not retryable) and a model that fails to start fail the **outer** Effect before any chunk exists, so a route can still answer with an error status.
+
+:::warning[The stream is single-use]
+The stream wraps one SDK stream, so run it once. To serve the same request again, call `createAgentUIStream` again.
+:::
+
+The SDK's `createAgentUIStreamResponse` does not accept an ai-effect agent. Use `createAgentUIStream` and the conversion below instead.
+
+## Return it as an HTTP response
+
+ai-effect has no wrapper for the SDK's response helpers. Convert the stream with `Stream.toReadableStreamEffect` and pass it to the SDK's `createUIMessageStreamResponse`. The `Ai` layer has to outlive the request, so run the handler on a `ManagedRuntime` built once ([why](/setup#why-a-layer)):
+
+```ts main.ts
+import { createUIMessageStreamResponse, type UIMessage } from 'ai';
+import { Ai, createAgentUIStream, ToolLoopAgent } from 'ai-effect';
+import { Effect, ManagedRuntime, Stream } from 'effect';
+
+const runtime = ManagedRuntime.make(Ai.layer);
+
+export const POST = (request: Request) =>
+	Effect.gen(function* () {
+		const body = yield* Effect.promise(
+			() => request.json() as Promise<{ messages: Array<UIMessage> }>,
+		);
+		const agent = yield* ToolLoopAgent.make({ model: 'openai/gpt-5' });
+		const stream = yield* createAgentUIStream({
+			agent,
+			uiMessages: body.messages,
+		});
+		const readable = yield* Stream.toReadableStreamEffect(stream);
+		return createUIMessageStreamResponse({ stream: readable });
+	}).pipe(
+		Effect.catch((error) =>
+			Effect.succeed(
+				new Response(error.message, {
+					status:
+						error.reason._tag === 'ai-effect/InvalidRequestError' ? 400 : 500,
+				}),
+			),
+		),
+		runtime.runPromise,
+	);
+```
+
+A stream from `createUIMessageStream` or `toUIMessageStream` converts the same way.
+
+## Cancellation
+
+Interrupting the fiber that consumes a UI stream stops the work behind it. Stopping early does not:
+
+| Consumer | Interrupted | Stopped early (`Stream.take`) or finished |
+| --- | --- | --- |
+| `toUIMessageStream` | aborts the model call | no abort |
+| `createAgentUIStream` | aborts the model call | no abort |
+| `createUIMessageStream` | interrupts `execute` and every merged stream | no interrupt |
+
+Closing the `Ai` layer also stops merged streams and aborts model calls, and an `abortSignal` you pass to a call is honored as well. Dropping a stream you never ran aborts nothing.

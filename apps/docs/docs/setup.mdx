@@ -1,0 +1,35 @@
+---
+title: Setup
+description: Provide Ai.layer once at the edge of your app.
+---
+
+Every ai-effect function requires the `Ai` service. Provide `Ai.layer` once, next to your other layers:
+
+```ts main.ts
+import { Ai, generateText } from 'ai-effect';
+import { Effect, Layer } from 'effect';
+
+const program = generateText({
+	model: 'openai/gpt-5',
+	prompt: 'Hello!',
+});
+
+const AppLayer = Layer.mergeAll(Ai.layer /* , your other layers */);
+
+program.pipe(Effect.provide(AppLayer), Effect.runPromise);
+```
+
+## Why a layer
+
+Callbacks run after the call that registered them has returned: a stream's `onEnd` fires long after `streamText` hands you the stream. They need somewhere to run that outlives the call, and `Ai.layer` is that place. It owns:
+
+- the fibers that run your callbacks and tool executions
+- the `AbortSignal` passed to every `streamText` and `ToolLoopAgent.stream` call
+
+Closing the layer, for example at app shutdown, aborts in-flight streams and interrupts the callbacks and tool executions still running.
+
+Because the layer's lifetime is the app's, provide it once rather than per request. No ai-effect function requires `Scope`, so there is no `Effect.scoped` to place.
+
+:::warning[Providing it per call]
+Providing `Ai.layer` around a single call closes the layer when that call's effect finishes. For `streamText` that aborts the stream you just returned.
+:::

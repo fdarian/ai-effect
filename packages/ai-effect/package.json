@@ -48,7 +48,7 @@
 		"type": "git",
 		"url": "git+https://github.com/fdarian/ai-effect.git"
 	},
-	"homepage": "https://github.com/fdarian/ai-effect#readme",
+	"homepage": "https://ai-effect.fdarian.com",
 	"bugs": {
 		"url": "https://github.com/fdarian/ai-effect/issues"
 	},

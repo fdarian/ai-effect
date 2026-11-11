@@ -1,0 +1,35 @@
+---
+title: Introduction
+description: ai-effect wraps the Vercel AI SDK so its functions return Effects.
+---
+
+ai-effect wraps the [AI SDK](https://ai-sdk.dev)'s `generateText`, `streamText`, `tool`, `ToolLoopAgent`, `embed`, `embedMany` and `rerank` so they return Effects, and streams become Effect `Stream`s. Callbacks and tool `execute` functions are Effects that can use your services, and a failed call fails with a typed [`AiError`](/concepts/errors) that says why. It also adds [UI message streams](/core/ui-streams) for chat UIs and [tracing](/observability/tracing) of every call.
+
+Use the AI SDK docs for options and result shapes: the wrapped functions take the same options, and return the same results except for `streamText` and `ToolLoopAgent.stream`. These docs cover only what changes.
+
+## Install
+
+```sh
+pnpm add ai-effect ai effect
+```
+
+`ai` (v7) and `effect` (v4) are peer dependencies, so your app shares one copy of each with this package. The package is ESM only, and its version tracks the AI SDK major: `ai-effect@7` wraps `ai@7`.
+
+## First example
+
+```ts main.ts
+import { Ai, generateText } from 'ai-effect';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+	const result = yield* generateText({
+		model: 'openai/gpt-5',
+		prompt: 'What is the capital of France?',
+	});
+	console.log(result.text);
+});
+
+program.pipe(Effect.provide(Ai.layer), Effect.runPromise);
+```
+
+`result` is the AI SDK's own result object. `Ai.layer` is explained in [Setup](/setup).

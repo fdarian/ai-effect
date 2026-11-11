@@ -1,0 +1,64 @@
+---
+import { getChangelog } from '../changelog.ts';
+
+const releases = getChangelog();
+---
+
+<div class="changelog">
+	{
+		releases.map((release, index) => (
+			<>
+				{index > 0 && <hr />}
+				<section>
+					<h2>
+						{release.version}
+						<time class="changelog-date" datetime={release.date}>
+							{release.date}
+						</time>
+					</h2>
+					{release.sections.map((section) => (
+						<>
+							<h3 class="changelog-label">{section.label}</h3>
+							<ul>
+								{section.items.map((item) => (
+									<li set:html={item} />
+								))}
+							</ul>
+						</>
+					))}
+				</section>
+			</>
+		))
+	}
+</div>
+
+<style>
+	.changelog :global(h2) {
+		margin-top: 0;
+	}
+
+	.changelog-date {
+		font-size: 0.8rem;
+		font-weight: 400;
+		color: var(--blume-muted-foreground);
+	}
+
+	.changelog :global(h3.changelog-label) {
+		margin: 1.25rem 0 0.5rem;
+		font-size: 0.7rem;
+		font-weight: 500;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--blume-muted-foreground);
+	}
+
+	.changelog :global(li > p) {
+		margin: 0;
+	}
+
+	.changelog :global(hr) {
+		margin: 2.5rem 0;
+		border: 0;
+		border-top: 1px solid var(--blume-border);
+	}
+</style>

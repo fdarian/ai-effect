@@ -1,0 +1,48 @@
+---
+title: Embeddings
+description: embed and embedMany as Effects.
+---
+
+`embed` and `embedMany` take the same options as the AI SDK's [`embed`](https://ai-sdk.dev/docs/reference/ai-sdk-core/embed) and [`embedMany`](https://ai-sdk.dev/docs/reference/ai-sdk-core/embed-many) and return an Effect of the same result. The error type is [`AiError`](/concepts/errors) and the requirements are `Ai` plus whatever your callbacks use.
+
+```ts main.ts
+import { Ai, embed, embedMany } from 'ai-effect';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+	const one = yield* embed({
+		model: 'openai/text-embedding-3-small',
+		value: 'sunny day at the beach',
+	});
+
+	const many = yield* embedMany({
+		model: 'openai/text-embedding-3-small',
+		values: ['sunny day at the beach', 'rainy afternoon in the city'],
+	});
+
+	console.log(one.embedding.length, many.embeddings.length);
+});
+
+program.pipe(Effect.provide(Ai.layer), Effect.runPromise);
+```
+
+On failure, `AiError.method` is `'embed'` or `'embedMany'`.
+
+## Callbacks are Effects
+
+`onStart` and `onEnd` take Effects that can use your services, and cannot fail. They run in the `Ai` layer, as described for [`generateText`](/core/generating-text#callbacks-are-effects).
+
+```ts main.ts
+import { embed } from 'ai-effect';
+import { Effect } from 'effect';
+
+const embedding = embed({
+	model: 'openai/text-embedding-3-small',
+	value: 'sunny day at the beach',
+	onEnd: (event) => Effect.log(`Embedded ${event.usage.tokens} tokens`),
+});
+```
+
+## Interruption
+
+Interrupting the Effect aborts the request. An `abortSignal` you pass is still honored; either one stops the call. There is no stream, so nothing outlives the Effect and the `Ai` layer is only needed to run callbacks.

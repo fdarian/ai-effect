@@ -1,0 +1,15 @@
+---
+import PresetSidebar from '@fdarian/blume-preset/sidebar.astro';
+import pkg from '../../../../packages/ai-effect/package.json';
+
+const repositoryUrl = pkg.repository.url
+	.replace(/^git\+/, '')
+	.replace(/\.git$/, '');
+---
+
+<PresetSidebar
+	{...Astro.props}
+	version={pkg.version}
+	changelog="/changelog"
+	repository={repositoryUrl}
+/>

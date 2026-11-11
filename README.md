@@ -1,3 +1,3 @@
 # ai-effect
 
-Effect wrappers for the AI SDK's `generateText`, `streamText` and `tool`. See the [package README](packages/ai-effect/README.md) for install and usage.
+Effect wrappers for the [AI SDK](https://ai-sdk.dev). Docs: [ai-effect.fdarian.com](https://ai-effect.fdarian.com)

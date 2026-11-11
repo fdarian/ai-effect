@@ -1,0 +1,30 @@
+---
+title: Reranking
+description: rerank as an Effect.
+---
+
+`rerank` takes the same options as the AI SDK's [`rerank`](https://ai-sdk.dev/docs/reference/ai-sdk-core/rerank) and returns an Effect of the same result. The error type is [`AiError`](/concepts/errors), with `method` `'rerank'`, and the requirements are `Ai` plus whatever your callbacks use.
+
+```ts main.ts
+import { Ai, rerank } from 'ai-effect';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+	const result = yield* rerank({
+		model: 'cohere/rerank-v3.5',
+		query: 'Which pet is easiest to care for?',
+		documents: ['A goldfish needs a tank.', 'A dog needs daily walks.'],
+		topN: 1,
+	});
+
+	return result.rerankedDocuments;
+});
+
+program.pipe(Effect.provide(Ai.layer), Effect.runPromise);
+```
+
+`documents` can be strings or objects, and `rerankedDocuments` keeps whichever type you passed.
+
+## Callbacks and interruption
+
+`onStart` and `onEnd` are Effects, as on [`embed`](/core/embeddings#callbacks-are-effects). Interrupting the Effect aborts the request, and an `abortSignal` you pass is still honored.

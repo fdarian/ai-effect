@@ -1,0 +1,83 @@
+---
+title: Errors
+description: The AiError type, its seven reasons, and how to handle and retry them.
+---
+
+A failed call fails its Effect with an `AiError` (tag `ai-effect/AiError`), instead of the SDK's thrown errors. It has:
+
+- `method`: the function that failed: `'generateText'`, `'streamText'`, `'embed'`, `'embedMany'`, `'rerank'`, `'ToolLoopAgent.generate'`, `'ToolLoopAgent.stream'`, `'createUIMessageStream'` or `'createAgentUIStream'`
+- `reason`: one of the seven reasons below
+- `message` and `isRetryable`, both derived from the reason
+
+## Reasons
+
+| `reason._tag`                   | What maps to it                                                                          | `isRetryable`               |
+| ------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------- |
+| `ai-effect/RateLimitError`      | HTTP 429; `retryAfter` is a `Duration` parsed from the `retry-after` header when present | yes                         |
+| `ai-effect/AuthenticationError` | HTTP 401 or 403                                                                          | no                          |
+| `ai-effect/InvalidRequestError` | HTTP 400, 404, 409 or 422, or a bad prompt, argument, model or unsupported feature       | no                          |
+| `ai-effect/ProviderError`       | HTTP 5xx, or a network failure with no status                                            | the SDK's own `isRetryable` |
+| `ai-effect/InvalidOutputError`  | the model returned no output, or output that failed parsing, validation or tool lookup   | yes                         |
+| `ai-effect/AbortedError`        | the call was aborted, or timed out (see below)                                           | no                          |
+| `ai-effect/UnknownError`        | anything else, including errors thrown by your own code and other HTTP statuses         | no                          |
+
+Every reason has a `message`, a `cause` holding the raw SDK error, and a `statusCode` when the provider returned one. If the SDK retried and gave up, `cause` is the last underlying error rather than the SDK's retry wrapper.
+
+### Aborts
+
+`AbortedError` covers a call stopped by an `abortSignal` you passed, an SDK timeout, or a provider abort. A stream that ends with an `abort` part fails with it too. It has no `statusCode`.
+
+Interrupting the fiber is not an `AbortedError`: it stays an interrupt and never reaches the error channel.
+
+## Handle one reason
+
+`Effect.catchReason` handles a single reason and leaves the others in the error channel:
+
+```ts main.ts
+import { generateText } from 'ai-effect';
+import { Effect } from 'effect';
+
+const reply = generateText({
+	model: 'openai/gpt-5',
+	prompt: 'Hello!',
+}).pipe(
+	Effect.map((result) => result.text),
+	Effect.catchReason(
+		'ai-effect/AiError',
+		'ai-effect/RateLimitError',
+		(reason) =>
+			Effect.logWarning('rate limited', reason.retryAfter).pipe(
+				Effect.as('Fallback response'),
+			),
+	),
+);
+```
+
+## Retry
+
+Drive a retry policy with `isRetryable`:
+
+```ts main.ts
+import { generateText } from 'ai-effect';
+import { Effect } from 'effect';
+
+const resilient = generateText({
+	model: 'openai/gpt-5',
+	prompt: 'Hello!',
+}).pipe(
+	Effect.retry({
+		while: (error) => error.isRetryable,
+		times: 3,
+	}),
+);
+```
+
+The AI SDK also retries on its own (its `maxRetries` option); `Effect.retry` applies after those attempts are exhausted.
+
+## Streaming errors
+
+[`streamText`](/core/generating-text#streamtext) and `ToolLoopAgent.stream` return their result as soon as the stream is set up, so the returned Effect only fails for errors thrown at that point. Errors during streaming fail the stream you consume, or the field Effect you await, such as `result.text`, with an `AiError` that has the same `method`. The result's `stream` field is the exception: it emits `error` and `abort` parts as data.
+
+## Tool failures
+
+A failing tool `execute` does not produce an `AiError`, including inside a [`ToolLoopAgent`](/core/agents); see [Tools](/core/tools#when-execute-fails).

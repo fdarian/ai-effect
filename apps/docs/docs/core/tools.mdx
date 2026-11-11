@@ -1,0 +1,64 @@
+---
+title: Tools
+description: Define AI SDK tools whose execute is an Effect.
+---
+
+`tool` takes an Effect for `execute`, so a tool can use your services. Unlike the SDK's `tool`, it returns an Effect, which you `yield*` before passing the tool to `generateText` or `streamText`. Other options follow the [AI SDK's `tool`](https://ai-sdk.dev/docs/foundations/tools).
+
+```ts main.ts
+import { Ai, generateText, tool } from 'ai-effect';
+import { Context, Effect, Layer, Schema } from 'effect';
+
+class Weather extends Context.Service<Weather>()('app/Weather', {
+	make: Effect.succeed({
+		getTemperature: (city: string) => Effect.succeed(city.length + 10),
+	}),
+}) {
+	static readonly layer = Layer.effect(Weather, Weather.make);
+}
+
+const program = Effect.gen(function* () {
+	const weather = yield* tool({
+		description: 'Get the current temperature for a city',
+		inputSchema: Schema.Struct({
+			city: Schema.String.annotate({ description: 'City name' }),
+		}),
+		execute: ({ city }) =>
+			Effect.gen(function* () {
+				const service = yield* Weather;
+				const temperature = yield* service.getTemperature(city);
+				return { city, temperature };
+			}),
+	});
+
+	const result = yield* generateText({
+		model: 'openai/gpt-5',
+		prompt: 'What is the temperature in Paris?',
+		tools: { weather },
+	});
+	return result.text;
+});
+
+program.pipe(
+	Effect.provide(Layer.mergeAll(Ai.layer, Weather.layer)),
+	Effect.runPromise,
+);
+```
+
+## Schemas
+
+`inputSchema` and `outputSchema` accept an Effect `Schema` directly. Any AI SDK schema (Zod, `jsonSchema`) still works. Effect schemas are converted with [`effectSchema`](/concepts/schemas), so the input is decoded with your schema before `execute` sees it.
+
+## Interruption
+
+`execute` is bound to the SDK's abort signal for that tool call: when the call aborts, the `execute` fiber is interrupted, so `Effect.onInterrupt` and scoped resources inside it clean up. This is the one callback that is cancelled with the call; the others below run in the `Ai` layer and only stop when it closes.
+
+## Lifecycle callbacks
+
+`onInputStart`, `onInputDelta`, `onInputAvailable` and `toModelOutput` are also Effects that can use your services. `toModelOutput` returns the model output; the others return `void`. None of them can fail, so handle errors inside them.
+
+## When `execute` fails
+
+`execute` may fail with any error type. A failure does not fail `generateText`: the SDK records it as a `tool-error` part in the step's content, carrying the value you failed with. Defects (`Effect.die`) and thrown exceptions are recorded the same way.
+
+With the default stop condition the call ends after that step, so `result.text` is empty. With a multi-step `stopWhen` such as `stepCountIs(3)`, the SDK sends the error back to the model for the next step.

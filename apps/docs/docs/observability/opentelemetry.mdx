@@ -1,0 +1,85 @@
+---
+title: OpenTelemetry
+description: Export ai-effect spans to OpenTelemetry and nest the AI SDK's own spans under them.
+---
+
+[Tracing](/observability/tracing) covers the spans ai-effect records. The AI SDK has its own telemetry package, `@ai-sdk/otel`, that records the finer detail: one span per step and per model call. Set both up on the same OpenTelemetry provider and the SDK's spans nest under the ai-effect span of the call that made them.
+
+## Setup
+
+```sh
+pnpm add @ai-sdk/otel @effect/opentelemetry @opentelemetry/api @opentelemetry/context-async-hooks @opentelemetry/sdk-trace-base @opentelemetry/exporter-trace-otlp-http
+```
+
+Register the provider, a context manager and the SDK's telemetry once at startup, then add `OtelTracer.layerGlobal` next to `Ai.layer`:
+
+```ts main.ts
+import { OpenTelemetry } from '@ai-sdk/otel';
+import * as OtelTracer from '@effect/opentelemetry/OtelTracer';
+import { context, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import {
+	BasicTracerProvider,
+	BatchSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
+import { isStepCount, registerTelemetry } from 'ai';
+import { Ai, generateText, tool } from 'ai-effect';
+import { Effect, Layer, Schema } from 'effect';
+
+const provider = new BasicTracerProvider({
+	spanProcessors: [
+		new BatchSpanProcessor(
+			new OTLPTraceExporter({ url: 'http://localhost:4318/v1/traces' }),
+		),
+	],
+});
+trace.setGlobalTracerProvider(provider);
+context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+registerTelemetry(new OpenTelemetry());
+
+const program = Effect.gen(function* () {
+	const weather = yield* tool({
+		description: 'Get the current temperature for a city',
+		inputSchema: Schema.Struct({ city: Schema.String }),
+		execute: ({ city }) => Effect.succeed({ city, temperature: 21 }),
+	});
+
+	return yield* generateText({
+		model: 'openai/gpt-5',
+		prompt: 'What is the temperature in Paris?',
+		tools: { weather },
+		stopWhen: isStepCount(2),
+	});
+});
+
+program.pipe(
+	Effect.provide(Layer.merge(Ai.layer, OtelTracer.layerGlobal)),
+	Effect.runPromise,
+);
+```
+
+`OtelTracer.layerGlobal` makes Effect's spans, including the ai-effect ones, go to the global provider. `registerTelemetry` turns on the SDK's spans for every call. A batching processor holds spans until it flushes, so call `provider.shutdown()` before a short-lived process exits.
+
+## The span tree
+
+With a tool call, one `generateText` produces:
+
+```txt
+ai-effect.generateText                 ai-effect
+├─ execute_tool weather                ai-effect
+└─ invoke_agent {modelId}              @ai-sdk/otel
+   ├─ step 1
+   │  ├─ chat {modelId}
+   │  └─ execute_tool weather
+   └─ step 2
+      └─ chat {modelId}
+```
+
+A tool run through ai-effect appears twice: once as the ai-effect span next to `invoke_agent`, and once as the SDK's span under its step. The two spans differ by instrumentation scope, which is `effect` for ai-effect and `gen_ai` for `@ai-sdk/otel`. Streaming calls nest the same way, even when the stream is consumed after `streamText` has returned.
+
+:::warning[Without a context manager the SDK spans start their own trace]
+The SDK reads the active OpenTelemetry context to find its parent. If you skip `AsyncLocalStorageContextManager`, there is no active context, and the SDK's `invoke_agent` becomes the root of a separate trace instead of a child of the ai-effect span. Enable the context manager before the first call.
+:::
+
+Telemetry options you pass on a call, such as `experimental_telemetry`, reach the SDK untouched.
