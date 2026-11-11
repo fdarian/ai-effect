@@ -2,6 +2,7 @@ import { NoOutputGeneratedError } from 'ai';
 import {
 	Cause,
 	Clock,
+	Context,
 	Effect,
 	Exit,
 	Option,
@@ -137,38 +138,53 @@ export const makeCallSpan = (
 		};
 	});
 
-/** Runs `use` with the span as the current parent and ends it on the effect's exit. */
-export const withCallSpan = <A, E, R>(
-	name: string,
-	options: Tracer.SpanOptionsNoTrace,
-	use: (call: CallSpan) => Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, Exclude<R, Tracer.ParentSpan>> =>
-	Effect.flatMap(makeCallSpan(name, options), (call) =>
-		use(call).pipe(
-			Effect.withParentSpan(call.span),
-			Effect.onExit((exit) => Effect.sync(() => call.finish(exit))),
-		),
-	);
+export class CurrentCallSpan extends Context.Service<
+	CurrentCallSpan,
+	CallSpan
+>()('ai-effect/internal/CurrentCallSpan') {}
+
+/** Runs the effect with the span as the current parent, reads it via {@link CurrentCallSpan}, and ends it on the effect's exit. */
+export const withCallSpan =
+	(name: string, options: Tracer.SpanOptionsNoTrace) =>
+	<A, E, R>(
+		self: Effect.Effect<A, E, R>,
+	): Effect.Effect<
+		A,
+		E,
+		Exclude<Exclude<R, CurrentCallSpan>, Tracer.ParentSpan>
+	> =>
+		Effect.flatMap(makeCallSpan(name, options), (call) =>
+			self.pipe(
+				Effect.provideService(CurrentCallSpan, call),
+				Effect.withParentSpan(call.span),
+				Effect.onExit((exit) => Effect.sync(() => call.finish(exit))),
+			),
+		);
 
 /**
  * Like {@link withCallSpan}, but only ends the span when setup fails. On
  * success the span stays open for the stream lifecycle callbacks to end.
  */
-export const withStreamSpan = <A, E, R>(
-	name: string,
-	options: Tracer.SpanOptionsNoTrace,
-	use: (call: CallSpan) => Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, Exclude<R, Tracer.ParentSpan>> =>
-	Effect.flatMap(makeCallSpan(name, options), (call) =>
-		use(call).pipe(
-			Effect.withParentSpan(call.span),
-			Effect.onExit((exit) =>
-				Effect.sync(() => {
-					if (Exit.isFailure(exit)) call.finish(exit);
-				}),
+export const withStreamSpan =
+	(name: string, options: Tracer.SpanOptionsNoTrace) =>
+	<A, E, R>(
+		self: Effect.Effect<A, E, R>,
+	): Effect.Effect<
+		A,
+		E,
+		Exclude<Exclude<R, CurrentCallSpan>, Tracer.ParentSpan>
+	> =>
+		Effect.flatMap(makeCallSpan(name, options), (call) =>
+			self.pipe(
+				Effect.provideService(CurrentCallSpan, call),
+				Effect.withParentSpan(call.span),
+				Effect.onExit((exit) =>
+					Effect.sync(() => {
+						if (Exit.isFailure(exit)) call.finish(exit);
+					}),
+				),
 			),
-		),
-	);
+		);
 
 /** Takes the call settings untyped: the wrappers' params are deferred generics TS can't narrow to the known keys. */
 export const textRequestAttributes = (

@@ -18,6 +18,7 @@ import { rebindTools } from '#src/internal/tool-tracing.ts';
 import {
 	agentSpanName,
 	type CallSpan,
+	CurrentCallSpan,
 	composeCallbacks,
 	streamLifecycleCallbacks,
 	TEXT_CALLBACK_ALIASES,
@@ -300,49 +301,40 @@ function make<
 					CALL_R
 				>,
 			) =>
-				withCallSpan(
-					agentSpanName(agent.id, 'ToolLoopAgent.generate'),
-					{
+				Effect.gen(function* () {
+					const call = yield* CurrentCallSpan;
+					const callRunPromise = yield* makeRunPromise<CALL_R>();
+					const sdkAgent = yield* buildSdkAgent({
+						call,
+						callbacks: textCallbacks(call),
+					});
+
+					return yield* Effect.tryPromise({
+						try: (signal) =>
+							sdkAgent.generate({
+								...params,
+								...wrapCallbacks(callRunPromise, params, CALL_CALLBACK_KEYS),
+								abortSignal: combineAbortSignals(signal, params.abortSignal),
+							} as OriginalGenerateParams<
+								CALL_OPTIONS,
+								TOOLS,
+								RUNTIME_CONTEXT,
+								OUTPUT
+							>),
+						catch: (cause) =>
+							new AiError({
+								method: 'ToolLoopAgent.generate',
+								reason: reasonFromSdkError(cause),
+							}),
+					});
+				}).pipe(
+					withCallSpan(agentSpanName(agent.id, 'ToolLoopAgent.generate'), {
 						kind: 'internal',
 						attributes: textRequestAttributes(settings, {
 							stream: false,
 							agentName: agent.id,
 						}),
-					},
-					(call) =>
-						Effect.gen(function* () {
-							const callRunPromise = yield* makeRunPromise<CALL_R>();
-							const sdkAgent = yield* buildSdkAgent({
-								call,
-								callbacks: textCallbacks(call),
-							});
-
-							return yield* Effect.tryPromise({
-								try: (signal) =>
-									sdkAgent.generate({
-										...params,
-										...wrapCallbacks(
-											callRunPromise,
-											params,
-											CALL_CALLBACK_KEYS,
-										),
-										abortSignal: combineAbortSignals(
-											signal,
-											params.abortSignal,
-										),
-									} as OriginalGenerateParams<
-										CALL_OPTIONS,
-										TOOLS,
-										RUNTIME_CONTEXT,
-										OUTPUT
-									>),
-								catch: (cause) =>
-									new AiError({
-										method: 'ToolLoopAgent.generate',
-										reason: reasonFromSdkError(cause),
-									}),
-							});
-						}),
+					}),
 				),
 			stream: <CALL_R = never>(
 				params: EffectifyCallParams<
@@ -352,73 +344,62 @@ function make<
 			) =>
 				Effect.gen(function* () {
 					const ai = yield* Ai;
-
-					return yield* withStreamSpan(
-						agentSpanName(agent.id, 'ToolLoopAgent.stream'),
-						{
-							kind: 'internal',
-							attributes: textRequestAttributes(settings, {
-								stream: true,
-								agentName: agent.id,
-							}),
-						},
-						(call) =>
-							Effect.gen(function* () {
-								const callRunPromise = yield* makeRunPromise<CALL_R>();
-								const callController = new AbortController();
-								const abortSignal = combineAbortSignals(
-									ai.abortSignal,
-									callController.signal,
-									params.abortSignal,
-								);
-								const lifecycle = streamLifecycleCallbacks(call, {
-									method: 'ToolLoopAgent.stream',
-									signal: abortSignal,
-									interruptSignals: [ai.abortSignal, callController.signal],
-								});
-								const sdkAgent = yield* buildSdkAgent({
-									call,
-									callbacks: lifecycle.callbacks,
-								});
-
-								// Not the fiber's signal: the stream outlives this Effect.
-								const raw = yield* Effect.tryPromise({
-									try: () =>
-										sdkAgent.stream({
-											...params,
-											...wrapCallbacks(
-												callRunPromise,
-												params,
-												CALL_CALLBACK_KEYS,
-											),
-											abortSignal,
-										} as OriginalStreamParams<
-											CALL_OPTIONS,
-											TOOLS,
-											RUNTIME_CONTEXT,
-											OUTPUT
-										>),
-									catch: (cause) =>
-										new AiError({
-											method: 'ToolLoopAgent.stream',
-											reason: reasonFromSdkError(cause),
-										}),
-								}).pipe(
-									Effect.onInterrupt(() =>
-										Effect.sync(() => callController.abort()),
-									),
-								);
-
-								return makeStreamTextResult(
-									'ToolLoopAgent.stream',
-									raw,
-									callController,
-									agent.tools,
-									lifecycle.streamEnd,
-								);
-							}),
+					const call = yield* CurrentCallSpan;
+					const callRunPromise = yield* makeRunPromise<CALL_R>();
+					const callController = new AbortController();
+					const abortSignal = combineAbortSignals(
+						ai.abortSignal,
+						callController.signal,
+						params.abortSignal,
 					);
-				}),
+					const lifecycle = streamLifecycleCallbacks(call, {
+						method: 'ToolLoopAgent.stream',
+						signal: abortSignal,
+						interruptSignals: [ai.abortSignal, callController.signal],
+					});
+					const sdkAgent = yield* buildSdkAgent({
+						call,
+						callbacks: lifecycle.callbacks,
+					});
+
+					// Not the fiber's signal: the stream outlives this Effect.
+					const raw = yield* Effect.tryPromise({
+						try: () =>
+							sdkAgent.stream({
+								...params,
+								...wrapCallbacks(callRunPromise, params, CALL_CALLBACK_KEYS),
+								abortSignal,
+							} as OriginalStreamParams<
+								CALL_OPTIONS,
+								TOOLS,
+								RUNTIME_CONTEXT,
+								OUTPUT
+							>),
+						catch: (cause) =>
+							new AiError({
+								method: 'ToolLoopAgent.stream',
+								reason: reasonFromSdkError(cause),
+							}),
+					}).pipe(
+						Effect.onInterrupt(() => Effect.sync(() => callController.abort())),
+					);
+
+					return makeStreamTextResult(
+						'ToolLoopAgent.stream',
+						raw,
+						callController,
+						agent.tools,
+						lifecycle.streamEnd,
+					);
+				}).pipe(
+					withStreamSpan(agentSpanName(agent.id, 'ToolLoopAgent.stream'), {
+						kind: 'internal',
+						attributes: textRequestAttributes(settings, {
+							stream: true,
+							agentName: agent.id,
+						}),
+					}),
+				),
 		};
 	});
 }

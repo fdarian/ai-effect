@@ -12,6 +12,7 @@ import {
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
 import {
+	CurrentCallSpan,
 	composeCallbacks,
 	embedManyCallbacks,
 	modelIdOf,
@@ -41,39 +42,33 @@ export function embedMany<
 >(
 	params: EffectEmbedManyDef<RUNTIME_CONTEXT, R>,
 ): Effect.Effect<EmbedManyResult<RUNTIME_CONTEXT>, AiError, Ai | R> {
-	return withCallSpan(
-		`embeddings ${modelIdOf(params.model)}`,
-		{
+	return Effect.gen(function* () {
+		const call = yield* CurrentCallSpan;
+		const runPromise = yield* makeRunPromise<R>();
+		const wrapped = wrapCallbacks(runPromise, params, START_END_CALLBACK_KEYS);
+
+		return yield* Effect.tryPromise({
+			try: (signal) =>
+				AiSdk.embedMany({
+					...params,
+					...wrapped,
+					...composeCallbacks(
+						wrapped,
+						embedManyCallbacks(call),
+						START_END_CALLBACK_ALIASES,
+					),
+					abortSignal: combineAbortSignals(signal, params.abortSignal),
+				} as OriginalEmbedManyDef<RUNTIME_CONTEXT>),
+			catch: (cause) =>
+				new AiError({
+					method: 'embedMany',
+					reason: reasonFromSdkError(cause),
+				}),
+		});
+	}).pipe(
+		withCallSpan(`embeddings ${modelIdOf(params.model)}`, {
 			kind: 'client',
 			attributes: { 'gen_ai.operation.name': 'embeddings' },
-		},
-		(call) =>
-			Effect.gen(function* () {
-				const runPromise = yield* makeRunPromise<R>();
-				const wrapped = wrapCallbacks(
-					runPromise,
-					params,
-					START_END_CALLBACK_KEYS,
-				);
-
-				return yield* Effect.tryPromise({
-					try: (signal) =>
-						AiSdk.embedMany({
-							...params,
-							...wrapped,
-							...composeCallbacks(
-								wrapped,
-								embedManyCallbacks(call),
-								START_END_CALLBACK_ALIASES,
-							),
-							abortSignal: combineAbortSignals(signal, params.abortSignal),
-						} as OriginalEmbedManyDef<RUNTIME_CONTEXT>),
-					catch: (cause) =>
-						new AiError({
-							method: 'embedMany',
-							reason: reasonFromSdkError(cause),
-						}),
-				});
-			}),
+		}),
 	);
 }
