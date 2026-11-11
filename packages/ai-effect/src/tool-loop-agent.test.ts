@@ -13,7 +13,7 @@ import {
 import { describe, expect, expectTypeOf, test } from 'vitest';
 import z from 'zod/v4';
 import { Ai } from '#src/ai.ts';
-import { AiError } from '#src/ai-error.ts';
+import { AiError, UnknownError } from '#src/ai-error.ts';
 import { effectSchema } from '#src/schema.ts';
 import { tool } from '#src/tool.ts';
 import { type ToolLoopAgent, toolLoopAgent } from '#src/tool-loop-agent.ts';
@@ -239,8 +239,9 @@ describe('toolLoopAgent errors', () => {
 			const error = yield* agent.generate({ prompt: 'test' }).pipe(Effect.flip);
 
 			expect(error).toBeInstanceOf(AiError);
-			expect(error.message).toBe('ToolLoopAgent.generate failed');
-			expect((error.cause as Error).message).toBe('API error');
+			expect(error.method).toBe('ToolLoopAgent.generate');
+			expect(error.reason).toBeInstanceOf(UnknownError);
+			expect((error.reason.cause as Error).message).toBe('API error');
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
 	test('stream surfaces SDK failures as AiError', () =>
@@ -255,8 +256,9 @@ describe('toolLoopAgent errors', () => {
 			const error = yield* agent.stream({ prompt: 'test' }).pipe(Effect.flip);
 
 			expect(error).toBeInstanceOf(AiError);
-			expect(error.message).toBe('ToolLoopAgent.stream failed');
-			expect((error.cause as Error).message).toBe('prepare failed');
+			expect(error.method).toBe('ToolLoopAgent.stream');
+			expect(error.reason).toBeInstanceOf(UnknownError);
+			expect((error.reason.cause as Error).message).toBe('prepare failed');
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
 	test('invalid call options fail with AiError', () =>
@@ -273,7 +275,10 @@ describe('toolLoopAgent errors', () => {
 				.pipe(Effect.flip);
 
 			expect(error).toBeInstanceOf(AiError);
-			expect(AiSdk.TypeValidationError.isInstance(error.cause)).toBe(true);
+			expect(error.method).toBe('ToolLoopAgent.generate');
+			expect(AiSdk.TypeValidationError.isInstance(error.reason.cause)).toBe(
+				true,
+			);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 });
 

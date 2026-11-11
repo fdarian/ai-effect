@@ -3,6 +3,7 @@ import { Effect } from 'effect';
 import { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
 import { GENERATE_TEXT_CALLBACK_KEYS } from '#src/generate-text.ts';
+import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
 	makeRunPromise,
@@ -205,7 +206,10 @@ export function toolLoopAgent<
 								OUTPUT
 							>),
 						catch: (cause) =>
-							new AiError({ message: 'ToolLoopAgent.generate failed', cause }),
+							new AiError({
+								method: 'ToolLoopAgent.generate',
+								reason: reasonFromSdkError(cause),
+							}),
 					});
 				}),
 			stream: <CALL_R = never>(
@@ -235,7 +239,10 @@ export function toolLoopAgent<
 								OUTPUT
 							>),
 						catch: (cause) =>
-							new AiError({ message: 'ToolLoopAgent.stream failed', cause }),
+							new AiError({
+								method: 'ToolLoopAgent.stream',
+								reason: reasonFromSdkError(cause),
+							}),
 					});
 				}),
 		};
