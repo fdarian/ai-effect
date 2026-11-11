@@ -28,8 +28,3 @@ export function effectSchema<A, I>(schema: Schema.Codec<A, I>) {
 		},
 	});
 }
-
-export const describe =
-	(d: string) =>
-	<S extends Schema.Top>(self: S) =>
-		self.annotate({ description: d });
