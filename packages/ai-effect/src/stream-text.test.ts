@@ -12,7 +12,7 @@ import {
 } from 'effect';
 import { beforeEach, describe, expect, expectTypeOf, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
-import { AiError, UnknownError } from '#src/ai-error.ts';
+import { AbortedError, AiError, UnknownError } from '#src/ai-error.ts';
 import { effectSchema } from '#src/schema.ts';
 import { streamText } from '#src/stream-text.ts';
 
@@ -392,8 +392,26 @@ describe('streamText result', () => {
 			).pipe(Effect.flip);
 			expect(error).toBeInstanceOf(AiError);
 			expect(error.method).toBe('streamText');
-			expect(error.reason._tag).toBe('ai-effect/UnknownError');
+			expect(error.reason).toBeInstanceOf(AbortedError);
 			expect(error.message).toBe('streamText: aborted');
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
+
+	test('a user abortSignal aborting mid-stream fails text as aborted', () =>
+		Effect.gen(function* () {
+			const userController = new AbortController();
+			const result = yield* streamText({
+				model: hangingModel(textChunks('Hi').slice(0, 3)),
+				prompt: 'hi',
+				abortSignal: userController.signal,
+			});
+
+			const fiber = yield* result.text.pipe(Effect.flip, Effect.forkChild);
+			yield* Effect.sleep('10 millis');
+			userController.abort();
+			const error = yield* Fiber.join(fiber);
+
+			expect(error).toBeInstanceOf(AiError);
+			expect(error.reason).toBeInstanceOf(AbortedError);
 		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 
 	test('interrupting a textStream consumer aborts the call', () =>

@@ -43,6 +43,14 @@ export class InvalidOutputError extends Data.TaggedClass(
 	}
 }
 
+export class AbortedError extends Data.TaggedClass(
+	'ai-effect/AbortedError',
+)<ReasonFields> {
+	get isRetryable() {
+		return false;
+	}
+}
+
 export class UnknownError extends Data.TaggedClass(
 	'ai-effect/UnknownError',
 )<ReasonFields> {
@@ -57,6 +65,7 @@ export type AiErrorReason =
 	| InvalidRequestError
 	| ProviderError
 	| InvalidOutputError
+	| AbortedError
 	| UnknownError;
 
 export class AiError extends Data.TaggedError('ai-effect/AiError')<{

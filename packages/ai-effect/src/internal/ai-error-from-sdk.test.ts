@@ -2,6 +2,7 @@ import * as AiSdk from 'ai';
 import { Duration } from 'effect';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+	AbortedError,
 	AuthenticationError,
 	InvalidOutputError,
 	InvalidRequestError,
@@ -153,6 +154,57 @@ describe('reasonFromSdkError', () => {
 		expect(reason).toBeInstanceOf(UnknownError);
 		expect(reason.cause).toBe(retryError);
 		expect(reason.message).toBe('Failed after 0 attempts');
+	});
+
+	test('maps an AbortError DOMException to AbortedError', () => {
+		const error = new DOMException('The operation was aborted', 'AbortError');
+
+		const reason = reasonFromSdkError(error);
+
+		expect(reason).toBeInstanceOf(AbortedError);
+		expect(reason.cause).toBe(error);
+		expect(reason.message).toBe('The operation was aborted');
+		expect(reason.isRetryable).toBe(false);
+	});
+
+	test('maps an Error named TimeoutError to AbortedError', () => {
+		const error = new Error('timed out');
+		error.name = 'TimeoutError';
+
+		const reason = reasonFromSdkError(error);
+
+		expect(reason).toBeInstanceOf(AbortedError);
+		expect(reason.cause).toBe(error);
+	});
+
+	test('maps an APICallError caused by an abort to AbortedError, not ProviderError', () => {
+		const abort = new DOMException('aborted', 'AbortError');
+		const error = new AiSdk.APICallError({
+			message: 'Cannot connect to API',
+			url: 'https://example.com',
+			requestBodyValues: {},
+			cause: abort,
+		});
+
+		const reason = reasonFromSdkError(error);
+
+		expect(reason).toBeInstanceOf(AbortedError);
+		expect(reason.cause).toBe(error);
+		expect(reason.message).toBe('Cannot connect to API');
+	});
+
+	test('maps a RetryError whose last error is an abort to AbortedError', () => {
+		const abort = new DOMException('aborted', 'AbortError');
+		const retryError = new AiSdk.RetryError({
+			message: 'Failed after 2 attempts',
+			reason: 'abort',
+			errors: [apiCallError({ statusCode: 500 }), abort],
+		});
+
+		const reason = reasonFromSdkError(retryError);
+
+		expect(reason).toBeInstanceOf(AbortedError);
+		expect(reason.cause).toBe(abort);
 	});
 
 	test('maps NoOutputGeneratedError to InvalidOutputError', () => {
