@@ -125,6 +125,12 @@ export interface ToolLoopAgent<
 > {
 	readonly id: string | undefined;
 	readonly tools: TOOLS;
+	/**
+	 * The SDK agent, for everything that isn't wrapped. Calling `raw.stream` or
+	 * `raw.generate` directly bypasses the `Ai` layer's abort signal and the
+	 * Effect callback bridging.
+	 */
+	readonly raw: SdkAgent<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>;
 	readonly generate: <R = never>(
 		params: EffectifyCallParams<
 			OriginalGenerateParams<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>,
@@ -178,6 +184,7 @@ function make<
 		return {
 			id: agent.id,
 			tools: agent.tools,
+			raw: agent,
 			generate: <CALL_R = never>(
 				params: EffectifyCallParams<
 					OriginalGenerateParams<CALL_OPTIONS, TOOLS, RUNTIME_CONTEXT, OUTPUT>,
@@ -246,6 +253,7 @@ function make<
 						'ToolLoopAgent.stream',
 						raw,
 						callController,
+						agent.tools,
 					);
 				}),
 		};

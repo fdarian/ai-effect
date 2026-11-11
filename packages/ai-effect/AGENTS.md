@@ -1,4 +1,4 @@
-Effect wrappers for AI SDK 7's `generateText`, `streamText`, `tool`, `ToolLoopAgent`, `embed`, `embedMany` and `rerank`, all backed by one `Ai` service. Published as `ai-effect`; the version tracks the AI SDK major.
+Effect wrappers for AI SDK 7's `generateText`, `streamText`, `tool`, `ToolLoopAgent`, `embed`, `embedMany`, `rerank`, `createUIMessageStream` and `createAgentUIStream`, all backed by one `Ai` service. Published as `ai-effect`; the version tracks the AI SDK major.
 
 ## Stack
 
@@ -18,11 +18,14 @@ One file per wrapped SDK function, each with its `.test.ts` beside it:
 - `ai-error.ts` — `AiError` (tag `ai-effect/AiError`, fields `method` and `reason`, `isRetryable` getter) and the `reason` union: `RateLimitError`, `AuthenticationError`, `InvalidRequestError`, `ProviderError`, `InvalidOutputError`, `AbortedError` (aborts and timeouts from the user's `abortSignal`), `UnknownError`. Each keeps the raw SDK error as `cause`
 - `generate-text.ts`, `stream-text.ts`, `tool.ts` — the wrappers; the long type comments explain inference workarounds, keep them in sync with `ai`'s types
 - `embed.ts`, `embed-many.ts`, `rerank.ts` — callback-only wrappers (`onStart`/`onEnd`) that need no inference workaround; `rerank`'s `VALUE` constraint is derived from `ai.rerank` because `ai` doesn't export `JSONObject`
-- `tool-loop-agent.ts` — `ToolLoopAgent.make`, an Effect that builds the SDK `ToolLoopAgent` (meant to be wrapped in a per-agent service and layer); like `tool`, settings callbacks run with the construction-site context, while `generate`/`stream` callbacks run with the call site's, and `stream` returns the same Effect-typed result as `streamText`
+- `tool-loop-agent.ts` — `ToolLoopAgent.make`, an Effect that builds the SDK `ToolLoopAgent` (meant to be wrapped in a per-agent service and layer); like `tool`, settings callbacks run with the construction-site context, while `generate`/`stream` callbacks run with the call site's, and `stream` returns the same Effect-typed result as `streamText`; `raw` is the SDK agent, which `createAgentUIStream` passes to the SDK
+- `create-ui-message-stream.ts` — lazy: every run of the returned `Stream` calls the SDK, with its own `AbortController` aborted when the consumer is interrupted. A failing `execute` becomes an `error` chunk (SDK `onError`), not a stream failure. `writer.merge` bridges an Effect `Stream` to a `ReadableStream` and stops when the run is interrupted or the `Ai` layer closes
+- `create-agent-ui-stream.ts` — returns `Effect<Stream>`, so validation, conversion and model-start errors fail the outer Effect before any chunk (a server can still answer 4xx; invalid `uiMessages` map to `InvalidRequestError`, not the `InvalidOutputError` that `reasonFromSdkError` gives `TypeValidationError`). The inner stream wraps one SDK stream and is single-use. There are no response-helper wrappers: callers use `Stream.toReadableStreamEffect` with the SDK's `createUIMessageStreamResponse`
 - `schema.ts` — `effectSchema`, Effect `Schema` to AI SDK schema
 - `internal/ai-error-from-sdk.ts` — `reasonFromSdkError`, the one place SDK errors are classified into a reason (unwraps `RetryError` first); new SDK error classes get mapped here
 - `internal/callbacks.ts` — Effect-to-Promise callback bridging shared by the wrappers
-- `internal/stream-text-result.ts` — wraps the SDK `StreamTextResult` into Effect streams/effects; shared by `streamText` and `ToolLoopAgent.stream`
+- `internal/abort-signal.ts` — `combineAbortSignals` and `abortOnInterrupt`, which aborts a per-call controller only on a real interruption, not on `Stream.take`-style early stops; every stream-returning wrapper pipes through it
+- `internal/stream-text-result.ts` — wraps the SDK `StreamTextResult` into Effect streams/effects; shared by `streamText` and `ToolLoopAgent.stream`; its `toUIMessageStream` uses the SDK's standalone `toUIMessageStream` (the result method is deprecated), hence the `tools` argument
 - `index.ts` — the public API; export new wrappers here
 
 When the AI SDK ships a new major, bump `ai` and the `peerDependencies` range together, and add a `major` changeset.
