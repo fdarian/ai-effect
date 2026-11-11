@@ -1,6 +1,6 @@
 # ai-effect
 
-Effect wrappers for the [AI SDK](https://ai-sdk.dev)'s `generateText`, `streamText` and `tool`. Callbacks and tool `execute` functions are Effects that can use your services, and calls fail with a typed `AiError` that says why they failed.
+Effect wrappers for the [AI SDK](https://ai-sdk.dev)'s `generateText`, `streamText`, `tool`, `ToolLoopAgent` and the UI message stream helpers. Callbacks and tool `execute` functions are Effects that can use your services, and calls fail with a typed `AiError` that says why they failed.
 
 The package version tracks the AI SDK major: `ai-effect@7` wraps `ai@7`.
 
@@ -76,6 +76,60 @@ const chat = (prompt: string) =>
 ```
 
 The callbacks run in the `Ai` layer, not in the effect that called `streamText`. An HTTP handler can return the response while the stream keeps going and `onEnd` still fires. When the `Ai` layer closes (e.g. at app shutdown), the stream is aborted and callbacks and tool executions still running are interrupted. An `abortSignal` you pass is honored too; either one stops the stream. Interrupting a fiber that consumes one of the result's streams or effects aborts the call too, but stopping early (`Stream.take`) does not. The SDK's own result, with its response helpers, is on `result.raw`.
+
+## UI message streams
+
+For chat UIs, `createUIMessageStream` is the Effect version of the SDK's function of the same name. `execute` is an Effect, and `writer.merge` takes an Effect `Stream`, such as the result of `toUIMessageStream()` on a `streamText` result:
+
+```ts
+import { createUIMessageStream, streamText } from 'ai-effect';
+import { Effect } from 'effect';
+
+const chatStream = (prompt: string) =>
+	createUIMessageStream({
+		execute: ({ writer }) =>
+			Effect.gen(function* () {
+				const result = yield* streamText({ model: 'openai/gpt-5', prompt });
+				yield* writer.merge(result.toUIMessageStream());
+			}),
+	});
+```
+
+The result is a `Stream<_, AiError>` that calls the SDK each time it runs. If `execute` fails, the stream ends with an `error` chunk rather than failing.
+
+`createAgentUIStream` does the same for a `ToolLoopAgent` and the `UIMessage`s a client sends. It returns an Effect of the stream, so invalid messages fail before anything is streamed and your handler can still answer with an error status:
+
+```ts
+import { createAgentUIStream, ToolLoopAgent } from 'ai-effect';
+import { Effect } from 'effect';
+
+const chat = (uiMessages: unknown[]) =>
+	Effect.gen(function* () {
+		const agent = yield* ToolLoopAgent.make({ model: 'openai/gpt-5' });
+		return yield* createAgentUIStream({ agent, uiMessages });
+	});
+```
+
+There are no wrappers for the SDK's response helpers. Convert the stream with `Stream.toReadableStreamEffect` and pass it to `createUIMessageStreamResponse` (or `pipeUIMessageStreamToResponse` for Node responses):
+
+```ts
+import { createUIMessageStreamResponse } from 'ai';
+import { Effect, Stream } from 'effect';
+
+const handler = (uiMessages: unknown[]) =>
+	Effect.gen(function* () {
+		const stream = yield* chat(uiMessages);
+		const readable = yield* Stream.toReadableStreamEffect(stream);
+		return createUIMessageStreamResponse({ stream: readable });
+	});
+```
+
+<details>
+<summary>Caveats</summary>
+
+The stream from `createAgentUIStream` wraps a single SDK stream, so it can be run once. Interrupting a fiber that consumes it aborts the model call. Invalid `uiMessages` fail with `InvalidRequestError`, which is not retryable.
+
+</details>
 
 ## `tool`
 
