@@ -1,8 +1,10 @@
 import * as AiSdk from 'ai';
-import { Context, Effect, Layer, Schema } from 'effect';
+import { MockLanguageModelV4 } from 'ai/test';
+import { Context, Deferred, Effect, Fiber, Layer, Schema } from 'effect';
 import { describe, expect, expectTypeOf, test } from 'vitest';
 import z from 'zod/v4';
 import { Ai } from '#src/ai.ts';
+import { generateText } from '#src/generate-text.ts';
 import { effectSchema } from '#src/schema.ts';
 import { tool } from '#src/tool.ts';
 
@@ -159,6 +161,54 @@ describe('tool', () => {
 			Effect.runPromise,
 		);
 	});
+
+	test('interrupts execute when the generateText fiber is interrupted, keeping the layer open', () =>
+		Effect.gen(function* () {
+			const started = yield* Deferred.make<void>();
+			const interrupted = yield* Deferred.make<void>();
+			const myTool = yield* tool({
+				inputSchema: Schema.Struct({}),
+				execute: () =>
+					Deferred.succeed(started, undefined).pipe(
+						Effect.andThen(Effect.never),
+						Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+					),
+			});
+			const model = new MockLanguageModelV4({
+				doGenerate: {
+					content: [
+						{
+							type: 'tool-call',
+							toolCallId: 'call-1',
+							toolName: 'slow',
+							input: '{}',
+						},
+					],
+					finishReason: { unified: 'tool-calls', raw: undefined },
+					usage: {
+						inputTokens: {
+							total: 1,
+							noCache: 1,
+							cacheRead: undefined,
+							cacheWrite: undefined,
+						},
+						outputTokens: { total: 1, text: 1, reasoning: undefined },
+					},
+					warnings: [],
+				},
+			});
+
+			const fiber = yield* generateText({
+				model,
+				prompt: 'test',
+				tools: { slow: myTool },
+			}).pipe(Effect.forkChild);
+			yield* Deferred.await(started);
+			expect(yield* Deferred.isDone(interrupted)).toBe(false);
+
+			yield* Fiber.interrupt(fiber);
+			yield* Deferred.await(interrupted).pipe(Effect.timeout('1 second'));
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise));
 });
 
 // These are compile-time-only checks: a tsc-only regression (like OUTPUT

@@ -80,6 +80,7 @@ export function tool<
 ): Effect.Effect<AiSdk.Tool<INPUT, OUTPUT, CONTEXT>, never, Ai | R> {
 	return Effect.gen(function* () {
 		const runPromise = yield* makeRunPromise<R>();
+		const execute = params.execute;
 
 		const originalParams = {
 			...params,
@@ -87,7 +88,15 @@ export function tool<
 			...(params.outputSchema === undefined
 				? {}
 				: { outputSchema: normalizeToolSchema(params.outputSchema) }),
-			execute: wrapCallback(runPromise, params.execute),
+			// Unlike the other callbacks, `execute` is bound to the call: the SDK's
+			// abort signal interrupts the fiber instead of leaving it to run until
+			// the layer closes.
+			execute:
+				execute &&
+				((input: INPUT, options: AiSdk.ToolExecutionOptions<CONTEXT>) =>
+					runPromise(execute(input, options), {
+						signal: options.abortSignal,
+					})),
 			onInputStart: wrapCallback(runPromise, params.onInputStart),
 			onInputDelta: wrapCallback(runPromise, params.onInputDelta),
 			onInputAvailable: wrapCallback(runPromise, params.onInputAvailable),
