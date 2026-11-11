@@ -75,7 +75,7 @@ const chat = (prompt: string) =>
 	});
 ```
 
-The callbacks run in the `Ai` layer, not in the effect that called `streamText`. An HTTP handler can return the response while the stream keeps going and `onEnd` still fires. Callbacks and tool executions still running when the `Ai` layer closes (e.g. at app shutdown) are interrupted.
+The callbacks run in the `Ai` layer, not in the effect that called `streamText`. An HTTP handler can return the response while the stream keeps going and `onEnd` still fires. When the `Ai` layer closes (e.g. at app shutdown), the stream is aborted and callbacks and tool executions still running are interrupted. An `abortSignal` you pass is honored too; either one stops the stream.
 
 ## `tool`
 

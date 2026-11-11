@@ -10,7 +10,7 @@ ESM TypeScript built with tsdown, Effect v4 and `ai` as peer dependencies (pinne
 
 ## Architecture
 
-The design rule: every exported function requires `Ai`, never `Scope`. `Ai` owns a `FiberSet` created in `Ai.layer`; callbacks and tool `execute` functions are forked into it with the call-site's context, so they outlive the call and are interrupted only when the layer closes. Don't reintroduce a per-call `FiberSet` or `Effect.scoped`.
+The design rule: every exported function requires `Ai`, never `Scope`. `Ai` owns a `FiberSet` and an `AbortSignal` created in `Ai.layer`; callbacks and tool `execute` functions are forked into the set with the call-site's context, so they outlive the call and are interrupted only when the layer closes. The layer's finalizer also aborts the signal, which `streamText` passes to the SDK so the stream stops too (`generateText` is already aborted by fiber interruption). Don't reintroduce a per-call `FiberSet` or `Effect.scoped`.
 
 One file per wrapped SDK function, each with its `.test.ts` beside it:
 

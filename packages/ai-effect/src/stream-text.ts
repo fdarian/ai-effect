@@ -1,6 +1,6 @@
 import * as AiSdk from 'ai';
 import { Effect } from 'effect';
-import type { Ai } from '#src/ai.ts';
+import { Ai } from '#src/ai.ts';
 import { AiError } from '#src/ai-error.ts';
 import { GENERATE_TEXT_CALLBACK_KEYS } from '#src/generate-text.ts';
 import {
@@ -65,6 +65,7 @@ export function streamText<
 	Ai | R
 > {
 	return Effect.gen(function* () {
+		const ai = yield* Ai;
 		const runPromise = yield* makeRunPromise<R>();
 
 		const originalParams = {
@@ -73,7 +74,16 @@ export function streamText<
 		} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>;
 
 		try {
-			return AiSdk.streamText(originalParams);
+			// Object.assign keeps `originalParams`' prompt/messages union intact,
+			// which spreading it would collapse.
+			return AiSdk.streamText(
+				Object.assign({}, originalParams, {
+					abortSignal:
+						originalParams.abortSignal === undefined
+							? ai.abortSignal
+							: AbortSignal.any([ai.abortSignal, originalParams.abortSignal]),
+				}),
+			);
 		} catch (cause) {
 			return yield* Effect.fail(
 				new AiError({ message: 'streamText failed', cause }),

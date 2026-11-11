@@ -134,6 +134,54 @@ describe('streamText', () => {
 			yield* Deferred.await(interrupted);
 		}).pipe(Effect.runPromise);
 	});
+	test('aborts the SDK stream when the Ai layer scope closes', () => {
+		let signal: AbortSignal | undefined;
+		vi.mocked(AiSdk.streamText).mockImplementation(
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			((params: any) => {
+				signal = params.abortSignal;
+				return { textStream: 'mock' };
+			}) as never,
+		);
+
+		return Effect.gen(function* () {
+			const layerScope = yield* Scope.make();
+			const context = yield* Layer.buildWithScope(Ai.layer, layerScope);
+
+			yield* streamText({
+				model: {} as AiSdk.LanguageModel,
+				prompt: 'test',
+			}).pipe(Effect.provideContext(context));
+
+			expect(signal?.aborted).toBe(false);
+			yield* Scope.close(layerScope, Exit.void);
+			expect(signal?.aborted).toBe(true);
+		}).pipe(Effect.runPromise);
+	});
+
+	test('still honors a user abortSignal alongside the layer signal', () => {
+		let signal: AbortSignal | undefined;
+		vi.mocked(AiSdk.streamText).mockImplementation(
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			((params: any) => {
+				signal = params.abortSignal;
+				return { textStream: 'mock' };
+			}) as never,
+		);
+		const userController = new AbortController();
+
+		return Effect.gen(function* () {
+			yield* streamText({
+				model: {} as AiSdk.LanguageModel,
+				prompt: 'test',
+				abortSignal: userController.signal,
+			});
+
+			expect(signal?.aborted).toBe(false);
+			userController.abort();
+			expect(signal?.aborted).toBe(true);
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
+	});
 });
 
 // These are compile-time-only checks: a tsc-only regression (like OUTPUT
