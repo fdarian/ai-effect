@@ -57,11 +57,18 @@ type EffectStreamTextDef<
 	abortSignal?: AbortSignal;
 };
 
-/** Takes the settings untyped for the same deferred-generics reason as `textRequestAttributes`. */
-function errorMayBeRetried(settings: Readonly<Record<string, unknown>>) {
+/**
+ * `0` only differs from omitting `streamRetries` by letting `onError` request
+ * retries, and the SDK buffers tool parts whenever that is possible. Our own
+ * `onError` is always set, so without a user `onError` we omit the `0`.
+ * Takes the settings untyped for the same deferred-generics reason as
+ * `textRequestAttributes`.
+ */
+function sdkStreamRetries(settings: Readonly<Record<string, unknown>>) {
 	const streamRetries = settings.streamRetries;
-	if (typeof streamRetries !== 'number') return false;
-	return streamRetries > 0 || settings.onError !== undefined;
+	if (typeof streamRetries !== 'number') return undefined;
+	if (streamRetries === 0 && settings.onError === undefined) return undefined;
+	return streamRetries;
 }
 
 export function streamText<
@@ -107,11 +114,16 @@ export function streamText<
 					const tools = yield* rebindTools<TOOLS>(params.tools, {
 						parent: call.span,
 					});
+					const streamRetries = sdkStreamRetries(params);
+					// Must override `params.streamRetries` with an explicit `undefined`.
+					const streamRetriesOverride = { streamRetries } as {
+						streamRetries?: number;
+					};
 					const lifecycle = streamLifecycleCallbacks(call, {
 						method: 'streamText',
 						signal: abortSignal,
 						userSignal: params.abortSignal,
-						errorMayBeRetried: errorMayBeRetried(params),
+						errorMayBeRetried: streamRetries !== undefined,
 					});
 
 					const raw = yield* Effect.try({
@@ -124,6 +136,7 @@ export function streamText<
 									onError: ({ error }: { error: unknown }) =>
 										console.error(error),
 								}),
+								...streamRetriesOverride,
 								...(tools === undefined ? {} : { tools }),
 								abortSignal,
 							} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),

@@ -284,6 +284,79 @@ describe('streamText', () => {
 	});
 });
 
+describe('streamText streamRetries', () => {
+	const toolInputChunks: ModelChunk[] = [
+		{ type: 'stream-start', warnings: [] },
+		{ type: 'tool-input-start', id: 't1', toolName: 'weather' },
+		{ type: 'tool-input-delta', id: 't1', delta: '{"city"' },
+	] as never;
+
+	const sdkStreamRetries = (settings: { streamRetries?: number }) =>
+		Effect.gen(function* () {
+			useRealSdk();
+			yield* streamText({
+				model: modelFromChunks(textChunks('Hi')),
+				prompt: 'hi',
+				...settings,
+			});
+			return vi.mocked(AiSdk.streamText).mock.calls[0]?.[0].streamRetries;
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
+
+	/** Whether the tool part reaches the consumer while the model is still streaming. */
+	const toolPartStreamsIncrementally = (settings: {
+		streamRetries: number;
+		onError?: () => Effect.Effect<void>;
+	}) =>
+		Effect.gen(function* () {
+			useRealSdk();
+			const result = yield* streamText({
+				model: hangingModel(toolInputChunks),
+				prompt: 'hi',
+				...settings,
+			});
+			const seen = yield* result.stream.pipe(
+				Stream.takeUntil((part) => part.type === 'tool-input-start'),
+				Stream.runCollect,
+				Effect.timeoutOption('200 millis'),
+			);
+			return seen._tag === 'Some';
+		}).pipe(Effect.provide(Ai.layer), Effect.runPromise);
+
+	test('streamRetries: 0 without onError is passed to the SDK as omitted', async () => {
+		expect(await sdkStreamRetries({ streamRetries: 0 })).toBeUndefined();
+	});
+
+	test('streamRetries: 0 with onError and positive streamRetries are kept', async () => {
+		expect(await sdkStreamRetries({ streamRetries: 2 })).toBe(2);
+		useRealSdk();
+		vi.mocked(AiSdk.streamText).mockClear();
+		await Effect.runPromise(
+			streamText({
+				model: modelFromChunks(textChunks('Hi')),
+				prompt: 'hi',
+				streamRetries: 0,
+				onError: () => Effect.void,
+			}).pipe(Effect.provide(Ai.layer)),
+		);
+		expect(vi.mocked(AiSdk.streamText).mock.calls[0]?.[0].streamRetries).toBe(
+			0,
+		);
+	});
+
+	test('streamRetries: 0 without onError does not buffer tool parts', async () => {
+		expect(await toolPartStreamsIncrementally({ streamRetries: 0 })).toBe(true);
+	});
+
+	test('streamRetries: 0 with onError buffers tool parts so a retry can discard them', async () => {
+		expect(
+			await toolPartStreamsIncrementally({
+				streamRetries: 0,
+				onError: () => Effect.void,
+			}),
+		).toBe(false);
+	});
+});
+
 describe('streamText result', () => {
 	beforeEach(useRealSdk);
 
