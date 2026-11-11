@@ -1,4 +1,4 @@
-Effect wrappers for AI SDK 7's `generateText`, `streamText` and `tool`, all backed by one `Ai` service. Published as `ai-effect`; the version tracks the AI SDK major.
+Effect wrappers for AI SDK 7's `generateText`, `streamText`, `tool`, `embed`, `embedMany` and `rerank`, all backed by one `Ai` service. Published as `ai-effect`; the version tracks the AI SDK major.
 
 ## Stack
 
@@ -17,6 +17,7 @@ One file per wrapped SDK function, each with its `.test.ts` beside it:
 - `ai.ts` — the `Ai` service and `Ai.layer`
 - `ai-error.ts` — `AiError` (tag `ai-effect/AiError`, fields `method` and `reason`, `isRetryable` getter) and the `reason` union: `RateLimitError`, `AuthenticationError`, `InvalidRequestError`, `ProviderError`, `InvalidOutputError`, `UnknownError`. Each keeps the raw SDK error as `cause`
 - `generate-text.ts`, `stream-text.ts`, `tool.ts` — the wrappers; the long type comments explain inference workarounds, keep them in sync with `ai`'s types
+- `embed.ts`, `embed-many.ts`, `rerank.ts` — callback-only wrappers (`onStart`/`onEnd`) that need no inference workaround; `rerank`'s `VALUE` constraint is derived from `ai.rerank` because `ai` doesn't export `JSONObject`
 - `schema.ts` — `effectSchema`, Effect `Schema` to AI SDK schema
 - `internal/ai-error-from-sdk.ts` — `reasonFromSdkError`, the one place SDK errors are classified into a reason (unwraps `RetryError` first); new SDK error classes get mapped here
 - `internal/callbacks.ts` — Effect-to-Promise callback bridging shared by the wrappers
