@@ -46,6 +46,7 @@ type EffectStreamTextDef<
 	tools?: TOOLS;
 	runtimeContext?: RUNTIME_CONTEXT;
 	output?: OUTPUT;
+	abortSignal?: AbortSignal;
 };
 
 export function streamText<
@@ -68,22 +69,15 @@ export function streamText<
 		const ai = yield* Ai;
 		const runPromise = yield* makeRunPromise<R>();
 
-		const originalParams = {
-			...params,
-			...wrapCallbacks(runPromise, params, STREAM_TEXT_CALLBACK_KEYS),
-		} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>;
-
 		try {
-			// Object.assign keeps `originalParams`' prompt/messages union intact,
-			// which spreading it would collapse.
-			return AiSdk.streamText(
-				Object.assign({}, originalParams, {
-					abortSignal:
-						originalParams.abortSignal === undefined
-							? ai.abortSignal
-							: AbortSignal.any([ai.abortSignal, originalParams.abortSignal]),
-				}),
-			);
+			return AiSdk.streamText({
+				...params,
+				...wrapCallbacks(runPromise, params, STREAM_TEXT_CALLBACK_KEYS),
+				abortSignal:
+					params.abortSignal === undefined
+						? ai.abortSignal
+						: AbortSignal.any([ai.abortSignal, params.abortSignal]),
+			} as OriginalStreamTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>);
 		} catch (cause) {
 			return yield* Effect.fail(
 				new AiError({ message: 'streamText failed', cause }),

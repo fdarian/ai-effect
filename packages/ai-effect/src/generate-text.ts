@@ -78,6 +78,7 @@ type EffectGenerateTextDef<
 	tools?: TOOLS;
 	runtimeContext?: RUNTIME_CONTEXT;
 	output?: OUTPUT;
+	abortSignal?: AbortSignal;
 };
 
 export function generateText<
@@ -95,23 +96,16 @@ export function generateText<
 	return Effect.gen(function* () {
 		const runPromise = yield* makeRunPromise<R>();
 
-		const originalParams = {
-			...params,
-			...wrapCallbacks(runPromise, params, GENERATE_TEXT_CALLBACK_KEYS),
-		} as OriginalGenerateTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>;
-
 		return yield* Effect.tryPromise({
 			try: (signal) =>
-				// Object.assign keeps `originalParams`' prompt/messages union intact,
-				// which spreading it would collapse.
-				AiSdk.generateText(
-					Object.assign({}, originalParams, {
-						abortSignal:
-							originalParams.abortSignal === undefined
-								? signal
-								: AbortSignal.any([signal, originalParams.abortSignal]),
-					}),
-				),
+				AiSdk.generateText({
+					...params,
+					...wrapCallbacks(runPromise, params, GENERATE_TEXT_CALLBACK_KEYS),
+					abortSignal:
+						params.abortSignal === undefined
+							? signal
+							: AbortSignal.any([signal, params.abortSignal]),
+				} as OriginalGenerateTextDef<TOOLS, RUNTIME_CONTEXT, OUTPUT>),
 			catch: (cause) => new AiError({ message: 'generateText failed', cause }),
 		});
 	});
