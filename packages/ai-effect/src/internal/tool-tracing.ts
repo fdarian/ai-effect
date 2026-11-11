@@ -81,6 +81,21 @@ function settleSpan(result: unknown, call: CallSpan): unknown {
 }
 
 /**
+ * Keeps the tool's prototype and every own property (including accessors) so
+ * class-instance tools still have their methods, with `this` being the copy.
+ */
+const withExecute = (tool: AiSdk.Tool, execute: ToolExecute): AiSdk.Tool =>
+	Object.create(Object.getPrototypeOf(tool), {
+		...Object.getOwnPropertyDescriptors(tool),
+		execute: {
+			value: execute,
+			writable: true,
+			enumerable: true,
+			configurable: true,
+		},
+	});
+
+/**
  * Rewrites every executable tool so each call gets an `execute_tool` span
  * parented under `parent`, whether the tool came from `tool()` or from the
  * SDK. The span is created from the services at rebind time, so it uses the
@@ -132,20 +147,20 @@ export const rebindTools = <TOOLS extends AiSdk.ToolSet>(
 					}),
 				);
 				reboundExecutes.add(instrumented);
-				return { ...tool, execute: instrumented } as AiSdk.Tool;
+				return withExecute(tool, instrumented);
 			}
 
 			const traced: ToolExecute = (input, callOptions) => {
 				const call = startSpan(name, tool, callOptions.toolCallId);
 				try {
-					return settleSpan(execute(input, callOptions), call);
+					return settleSpan(execute.call(tool, input, callOptions), call);
 				} catch (error) {
 					call.finish(Exit.fail(error));
 					throw error;
 				}
 			};
 			reboundExecutes.add(traced);
-			return { ...tool, execute: traced } as AiSdk.Tool;
+			return withExecute(tool, traced);
 		};
 
 		return Object.fromEntries(

@@ -118,6 +118,58 @@ describe('tool spans', () => {
 		).toBe(true);
 	});
 
+	test('a foreign tool still runs as a method of the tool', async () => {
+		const tracer = makeTestTracer();
+		const weather = {
+			inputSchema: weatherInput,
+			forecast: 'sunny',
+			execute(input: { city: string }) {
+				return `${this.forecast} in ${input.city}`;
+			},
+		};
+		const result = await run(
+			generateText({
+				model: toolCallModel(),
+				prompt: 'hi',
+				tools: { weather },
+			}),
+			tracer,
+		);
+
+		expect(result.toolResults.at(0)?.output).toBe('sunny in Paris');
+		expect(
+			Exit.isSuccess(
+				endedExit(spanNamed(tracer.spans, 'execute_tool weather')),
+			),
+		).toBe(true);
+	});
+
+	test('a class-instance tool keeps its prototype members', async () => {
+		const tracer = makeTestTracer();
+		class WeatherTool {
+			inputSchema = weatherInput;
+			unit = 'C';
+			execute = async () => ({ temperature: 20 });
+			toModelOutput(options: { output: { temperature: number } }) {
+				return {
+					type: 'text' as const,
+					value: `${options.output.temperature}${this.unit}`,
+				};
+			}
+		}
+		const result = await run(
+			generateText({
+				model: toolCallModel(),
+				prompt: 'hi',
+				tools: { weather: new WeatherTool() },
+			}),
+			tracer,
+		);
+
+		expect(result.toolResults.at(0)?.output).toEqual({ temperature: 20 });
+		expect(JSON.stringify(result.response.messages)).toContain('20C');
+	});
+
 	test('a foreign AsyncIterable tool keeps its preliminary results and ends on done', async () => {
 		const tracer = makeTestTracer();
 		const weather = AiSdk.tool({
