@@ -6,6 +6,9 @@ import { Ai } from '#src/ai.ts';
 import { effectSchema } from '#src/schema.ts';
 import { tool } from '#src/tool.ts';
 
+const settle = <A>(value: A | PromiseLike<A>) =>
+	Effect.promise(async () => value);
+
 describe('tool', () => {
 	test('wraps execute with Effect -> Promise bridging', () =>
 		Effect.gen(function* () {
@@ -62,30 +65,33 @@ describe('tool', () => {
 				outputSchema: rawOutput,
 			});
 
-			const inputSchema = myTool.inputSchema as {
-				validate: (value: unknown) => unknown;
-			};
-			expect(inputSchema.validate({ count: '1' })).toEqual({
+			const inputSchema = AiSdk.asSchema(myTool.inputSchema);
+			expect(yield* settle(inputSchema.jsonSchema)).toMatchObject({
+				type: 'object',
+				properties: { count: { type: 'string' } },
+				required: ['count'],
+			});
+			expect(yield* settle(inputSchema.validate?.({ count: '1' }))).toEqual({
 				success: true,
 				value: { count: 1 },
 			});
-			expect(inputSchema.validate({ count: 1 })).toMatchObject({
-				success: false,
-			});
-			const outputValidator = (
-				myTool.outputSchema as {
-					validate?: (value: unknown) => unknown;
-				}
-			).validate;
-			if (outputValidator === undefined)
-				throw new Error('missing output validator');
-			expect(outputValidator({ count: 1 })).toEqual({
+			const invalidInput = yield* settle(inputSchema.validate?.({ count: 1 }));
+			expect(invalidInput?.success).toBe(false);
+			if (invalidInput?.success === false)
+				expect(AiSdk.TypeValidationError.isInstance(invalidInput.error)).toBe(
+					true,
+				);
+
+			if (myTool.outputSchema === undefined)
+				throw new Error('missing output schema');
+			const outputSchema = AiSdk.asSchema(myTool.outputSchema);
+			expect(yield* settle(outputSchema.validate?.({ count: 1 }))).toEqual({
 				success: true,
 				value: { count: 1 },
 			});
-			expect(outputValidator({ count: 'invalid' })).toMatchObject({
-				success: false,
-			});
+			expect(
+				yield* settle(outputSchema.validate?.({ count: 'invalid' })),
+			).toMatchObject({ success: false });
 
 			const wrappedOutput = effectSchema(
 				Schema.Struct({ wrapped: Schema.String }),

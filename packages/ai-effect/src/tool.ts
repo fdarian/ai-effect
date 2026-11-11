@@ -17,7 +17,9 @@ type ToolModelOutput = Awaited<
 type EffectToolSchema<T> = AiSdk.FlexibleSchema<T> | Schema.Codec<T, unknown>;
 
 function normalizeToolSchema<T>(schema: EffectToolSchema<T>) {
-	return Schema.isSchema(schema)
+	// `effectSchema` returns an Effect schema too; '~standard' tells it apart
+	// from a raw one so it passes through instead of being wrapped again.
+	return Schema.isSchema(schema) && !('~standard' in schema)
 		? effectSchema(schema as Schema.Codec<T, unknown>)
 		: schema;
 }
