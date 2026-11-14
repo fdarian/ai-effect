@@ -7,6 +7,7 @@ import { combineAbortSignals } from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
+	logStreamError,
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
@@ -128,8 +129,7 @@ export function streamText<
 						lifecycle.callbacks,
 						TEXT_CALLBACK_ALIASES,
 						{
-							// Setting `onError` replaces the SDK's default logger.
-							onError: ({ error }: { error: unknown }) => console.error(error),
+							onError: logStreamError(runPromise, 'streamText'),
 						},
 					),
 					...streamRetriesOverride,

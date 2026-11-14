@@ -1,6 +1,7 @@
 import * as AiSdk from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
 import {
+	Cause,
 	Effect,
 	Exit,
 	Fiber,
@@ -31,6 +32,7 @@ import {
 import {
 	generateModel,
 	hangingModel,
+	makeTestLogger,
 	run,
 	streamModel,
 	textChunks,
@@ -651,11 +653,13 @@ describe('ToolLoopAgent.stream spans', () => {
 		consoleError.mockRestore();
 	});
 
-	test('without a user onError the SDK default of logging the error is kept', async () => {
+	test('without a user onError the error is logged through the Effect Logger, not console.error', async () => {
 		const tracer = makeTestTracer();
+		const logger = makeTestLogger();
 		const consoleError = vi
 			.spyOn(console, 'error')
 			.mockImplementation(() => undefined);
+		const boom = new Error('boom');
 		try {
 			await run(
 				Effect.gen(function* () {
@@ -663,18 +667,52 @@ describe('ToolLoopAgent.stream spans', () => {
 						id: 'a',
 						model: streamModel([
 							{ type: 'stream-start', warnings: [] },
-							{ type: 'error', error: new Error('boom') },
+							{ type: 'error', error: boom },
 						]),
 					});
 					const result = yield* agent.stream({ prompt: 'hi' });
 					yield* Stream.runDrain(result.stream);
-				}),
+					yield* Effect.promise(() =>
+						settled(() => expect(logger.entries).toHaveLength(1)),
+					);
+				}).pipe(Effect.provide(logger.layer)),
 				tracer,
 			);
-			await settled(() => expect(consoleError).toHaveBeenCalledTimes(1));
+
+			const entry = logger.entries[0];
+			expect(entry?.level).toBe('Error');
+			expect(entry?.message).toEqual(['ToolLoopAgent.stream: stream error']);
+			expect(entry && Cause.squash(entry.cause)).toBe(boom);
+			expect(consoleError).not.toHaveBeenCalled();
 		} finally {
 			consoleError.mockRestore();
 		}
+	});
+
+	test('a user onError replaces the log', async () => {
+		const tracer = makeTestTracer();
+		const logger = makeTestLogger();
+		const onError = vi.fn(() => Effect.void);
+		await run(
+			Effect.gen(function* () {
+				const agent = yield* ToolLoopAgent.make({
+					id: 'a',
+					model: streamModel([
+						{ type: 'stream-start', warnings: [] },
+						{ type: 'error', error: new Error('boom') },
+					]),
+					onError,
+				});
+				const result = yield* agent.stream({ prompt: 'hi' });
+				yield* Stream.runDrain(result.stream);
+				yield* Effect.promise(() =>
+					settled(() => expect(onError).toHaveBeenCalledTimes(1)),
+				);
+			}).pipe(Effect.provide(logger.layer)),
+			tracer,
+		);
+
+		expect(logger.entries).toEqual([]);
 	});
 
 	test('still runs settings-level and call-level user callbacks', async () => {

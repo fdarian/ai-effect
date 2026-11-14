@@ -7,6 +7,7 @@ import { combineAbortSignals } from '#src/internal/abort-signal.ts';
 import { reasonFromSdkError } from '#src/internal/ai-error-from-sdk.ts';
 import {
 	type EffectifyCallbacks,
+	logStreamError,
 	makeRunPromise,
 	wrapCallbacks,
 } from '#src/internal/callbacks.ts';
@@ -234,9 +235,10 @@ function make<
 				const services = yield* Effect.context<never>();
 				// `runPromise` carries `make`'s parent span, so each settings callback
 				// is re-parented under this call's span.
+				const runInCall = (effect: Effect.Effect<unknown, never, R>) =>
+					runPromise(effect.pipe(Effect.withParentSpan(tracing.call.span)));
 				const callWrapped = wrapCallbacks(
-					(effect: Effect.Effect<unknown, never, R>) =>
-						runPromise(effect.pipe(Effect.withParentSpan(tracing.call.span))),
+					runInCall,
 					settings,
 					SETTINGS_CALLBACK_KEYS,
 				);
@@ -265,8 +267,7 @@ function make<
 						tracing.callbacks,
 						TEXT_CALLBACK_ALIASES,
 						{
-							// Setting `onError` replaces the SDK's default logger.
-							onError: ({ error }: { error: unknown }) => console.error(error),
+							onError: logStreamError(runInCall, 'ToolLoopAgent.stream'),
 						},
 					),
 					...(tools === undefined ? {} : { tools }),

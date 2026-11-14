@@ -1,4 +1,4 @@
-import { Effect, FiberSet } from 'effect';
+import { Cause, Effect, FiberSet } from 'effect';
 import { Ai } from '#src/ai.ts';
 
 /**
@@ -32,6 +32,22 @@ export function wrapCallbacks(
 	}
 	return wrapped;
 }
+
+/**
+ * Fallback `onError` for the streaming wrappers. Setting any `onError` replaces
+ * the SDK's default `console.error`, and tracing always sets one, so without
+ * this a stream error would only reach the span. Pass the same `runPromise`
+ * the user callbacks run with so the caller's `Logger` and span apply.
+ */
+export const logStreamError =
+	(
+		runPromise: (effect: Effect.Effect<void>) => Promise<unknown>,
+		method: string,
+	) =>
+	(event: { readonly error: unknown }) =>
+		runPromise(
+			Effect.logError(`${method}: stream error`, Cause.fail(event.error)),
+		);
 
 export type EffectifyCallbacks<T, Keys extends string, R> = Omit<
 	T,
