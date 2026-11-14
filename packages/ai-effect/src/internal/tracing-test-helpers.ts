@@ -1,5 +1,5 @@
 import { MockLanguageModelV4 } from 'ai/test';
-import { Effect, Layer } from 'effect';
+import { type Cause, Effect, Layer, Logger } from 'effect';
 import z from 'zod/v4';
 import { Ai } from '#src/ai.ts';
 import type { makeTestTracer } from '#src/internal/test-tracer.ts';
@@ -89,3 +89,27 @@ export const run = <A, E>(
 		Effect.provide(Layer.merge(Ai.layer, tracer.layer)),
 		Effect.runPromise,
 	);
+
+type LogEntry = {
+	readonly level: string;
+	readonly message: ReadonlyArray<unknown>;
+	readonly cause: Cause.Cause<unknown>;
+};
+
+/** Replaces the logger set, so entries are captured and nothing is printed. */
+export const makeTestLogger = () => {
+	const entries: LogEntry[] = [];
+	const layer = Logger.layer(
+		[
+			Logger.make((options) => {
+				entries.push({
+					level: options.logLevel,
+					message: options.message as ReadonlyArray<unknown>,
+					cause: options.cause,
+				});
+			}),
+		],
+		{ mergeWithExisting: false },
+	);
+	return { entries, layer };
+};

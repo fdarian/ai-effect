@@ -4,7 +4,16 @@ import {
 	MockLanguageModelV4,
 	MockRerankingModelV4,
 } from 'ai/test';
-import { Effect, Exit, Fiber, Layer, Option, Scope, Stream } from 'effect';
+import {
+	Cause,
+	Effect,
+	Exit,
+	Fiber,
+	Layer,
+	Option,
+	Scope,
+	Stream,
+} from 'effect';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { Ai } from '#src/ai.ts';
 import { AbortedError, AiError, AuthenticationError } from '#src/ai-error.ts';
@@ -22,6 +31,7 @@ import {
 	finishChunk,
 	generateModel,
 	hangingModel,
+	makeTestLogger,
 	run,
 	streamModel,
 	streamOf,
@@ -390,9 +400,6 @@ describe('streamText spans', () => {
 
 	test('a stream error part records the real error type, not NoOutputGenerated', async () => {
 		const tracer = makeTestTracer();
-		const consoleError = vi
-			.spyOn(console, 'error')
-			.mockImplementation(() => undefined);
 		const unauthorized = new AiSdk.APICallError({
 			message: 'unauthorized',
 			url: 'https://example.test',
@@ -418,13 +425,71 @@ describe('streamText spans', () => {
 				expect(attributesOf(span)['error.type']).toBe(
 					'ai-effect/AuthenticationError',
 				);
-			}),
+			}).pipe(Effect.provide(makeTestLogger().layer)),
 			tracer,
 		);
+	});
 
-		// Tracing sets `onError`, which would otherwise silence the SDK's logger.
-		expect(consoleError).toHaveBeenCalledWith(unauthorized);
-		consoleError.mockRestore();
+	describe('stream error logging', () => {
+		const failingModel = (error: unknown) =>
+			streamModel([
+				{ type: 'stream-start', warnings: [] },
+				{ type: 'error', error },
+			]);
+
+		test('without a user onError the error is logged through the Effect Logger, not console.error', async () => {
+			const tracer = makeTestTracer();
+			const logger = makeTestLogger();
+			const consoleError = vi
+				.spyOn(console, 'error')
+				.mockImplementation(() => undefined);
+			const boom = new Error('boom');
+			try {
+				await run(
+					Effect.gen(function* () {
+						const result = yield* streamText({
+							model: failingModel(boom),
+							prompt: 'hi',
+						});
+						yield* Stream.runDrain(result.stream);
+						yield* Effect.promise(() =>
+							settled(() => expect(logger.entries).toHaveLength(1)),
+						);
+					}).pipe(Effect.provide(logger.layer)),
+					tracer,
+				);
+
+				const entry = logger.entries[0];
+				expect(entry?.level).toBe('Error');
+				expect(entry?.message).toEqual(['streamText: stream error']);
+				expect(entry && Cause.squash(entry.cause)).toBe(boom);
+				expect(consoleError).not.toHaveBeenCalled();
+			} finally {
+				consoleError.mockRestore();
+			}
+		});
+
+		test('a user onError replaces the log', async () => {
+			const tracer = makeTestTracer();
+			const logger = makeTestLogger();
+			const onError = vi.fn(() => Effect.void);
+			await run(
+				Effect.gen(function* () {
+					const result = yield* streamText({
+						model: failingModel(new Error('boom')),
+						prompt: 'hi',
+						onError,
+					});
+					yield* Stream.runDrain(result.stream);
+					yield* Effect.promise(() =>
+						settled(() => expect(onError).toHaveBeenCalledTimes(1)),
+					);
+				}).pipe(Effect.provide(logger.layer)),
+				tracer,
+			);
+
+			expect(logger.entries).toEqual([]);
+		});
 	});
 
 	describe('stream retries', () => {
