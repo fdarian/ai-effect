@@ -1,5 +1,11 @@
 # ai-effect
 
+## 7.1.2
+
+### Patch Changes
+
+- bd067da: Stream errors from `streamText` and `ToolLoopAgent.stream` without a user `onError` are now logged with `Effect.logError`, so the caller's `Logger` and span apply, instead of `console.error`. Pass `onError` to replace the log.
+
 ## 7.1.1
 
 ### Patch Changes
