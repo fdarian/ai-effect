@@ -1,6 +1,6 @@
 {
 	"name": "ai-effect",
-	"version": "7.1.1",
+	"version": "7.1.2",
 	"description": "Effect-native wrappers for the Vercel AI SDK",
 	"type": "module",
 	"license": "Apache-2.0",
